@@ -34,6 +34,7 @@ class Case2ExampleBot(UTCBot):
         # This variable will be a map from asset names to positions. We start out by initializing it
         # to zero for every asset.
         self.positions = {}
+        self.trade_prices = {}
 
         self.positions["UC"] = 0
         for strike in option_strikes:
@@ -163,6 +164,47 @@ class Case2ExampleBot(UTCBot):
                 )
                 assert ask_response.ok
 
+    def calc_price_helper(self, book: object) -> float:
+        if len(book) < 3:
+            bid = ask = 0
+            quantity = 0
+            # find weighted bid price
+            for i in range(len(book)):
+                quantity += float(book.bids[i].qty)
+                bid += float(book.bids[i].px) * float(book.bids[i].qty)
+
+            bid /= quantity
+
+            quantity = 0
+            # find weighted ask price
+            for i in range(len(book)):
+                quantity += float(book.asks[i].qty)
+                ask += float(book.asks[i].px) * float(book.asks[i].qty)
+
+            ask /= quantity
+
+            return (bid, ask)
+
+        else:
+            bid = ask = 0
+            quantity = 0
+            # find weighted bid price
+            for i in range(3):
+                quantity += float(book.bids[i].qty)
+                bid += float(book.bids[i].px) * float(book.bids[i].qty)
+
+            bid /= quantity
+
+            quantity = 0
+            # find weighted ask price
+            for i in range(3):
+                quantity += float(book.asks[i].qty)
+                ask += float(book.asks[i].px) * float(book.asks[i].qty)
+
+            ask /= quantity
+
+            return bid, ask
+
     async def handle_exchange_update(self, update: pb.FeedMessage):
         kind, _ = betterproto.which_one_of(update, "msg")
 
@@ -188,6 +230,15 @@ class Case2ExampleBot(UTCBot):
             self.underlying_price = (
                 float(book.bids[0].px) + float(book.asks[0].px)
             ) / 2
+
+            for strike in option_strikes:
+                for flag in ["C", "P"]:
+                    asset_name = f"UC{strike}{flag}"
+                    book_ = update.market_snapshot_msg.books[asset_name]
+
+                    bid, ask = self.calc_price_helper(book_)
+
+                    self.trade_prices[asset_name] = (bid + ask) / 2
 
             await self.update_options_quotes()
 
