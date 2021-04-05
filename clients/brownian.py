@@ -12,6 +12,17 @@ VOLATILITY -- Implied volatility or other simplistic approximation
 """
 
 
+class Call_Payoff:
+    def __init__(self, strike):
+        self.strike = strike
+
+    def get_payoff(self, stock_price):
+        if stock_price > self.strike:
+            return stock_price - self.strike
+        else:
+            return 0
+
+
 class Brownian:
     def simulate_paths(self):
         while self.T - self.dt > 0:  # While time remains

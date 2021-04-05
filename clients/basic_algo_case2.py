@@ -4,10 +4,16 @@ from dataclasses import astuple
 from utc_bot import UTCBot, start_bot
 import proto.utc_bot as pb
 import betterproto
-import brownian
 
+import brownian
+import implied_volatility
+import volatility
+import volatility_blending
+
+import numpy as np
 import asyncio
 import random
+import math
 
 option_strikes = [90, 95, 100, 105, 110]
 
@@ -41,14 +47,48 @@ class Case2ExampleBot(UTCBot):
         # Stores the current value of the underlying asset
         self.underlying_price = 100
 
+    def compute_implied_volatility(self) -> float:
+        """
+        This function estimates the implied volatility of the underlying asset. Utilizes the
+        provided py_vollib package and the templated code from Piazza.
+        """
+        total_vol = 0
+        total_weight = 0
+
+        for strike in option_strikes:
+            for flag in ["C", "P"]:
+                # Weight to be used for the weighted average
+                # (for motivation, look up how vega is computed in B-S model)
+                weight = math.exp(0.5 * math.log(self.underlying_price / strike) ** 2)
+
+                # This function should compute the Black-Scholes implied volatility
+                vol = implied_volatility.implied_volatility_calc(
+                    price[f"UC{strike}{flag}"],
+                    self.underlying_price,
+                    strike,
+                    time_to_expiry,
+                    flag,
+                )
+
+                total_vol += weight * vol
+                total_weight += weight
+
+        exchange_vol_estimate = total_vol / total_weight
+
     def compute_vol_estimate(self) -> float:
         """
         This function is used to provide an estimate of underlying's volatility. Because this is
         an example bot, we just use a placeholder value here. We recommend that you look into
         different ways of finding what the true volatility of the underlying is.
         """
-        return 0.35
 
+        # calculate log_returns here; use np array?
+        log_returns = []
+
+        return volatility_blending.blend(log_returns)
+
+    # TODO: Research various pricing models
+    # Takes in volatility calculated in volatility.py
     def compute_options_price(
         self,
         flag: str,
@@ -66,7 +106,25 @@ class Case2ExampleBot(UTCBot):
         You may want to look into the py_vollib library, which is installed by default in your
         virtual environment.
         """
-        return 1.0
+        paths = 50
+        drift = 0.08
+        dt = 1 / 251
+        T = 1
+        price_paths = []
+
+        for i in range(0, paths):
+            price_paths.append(
+                brownian.Brownian(underlying_px, drift, volatility, dt, T).prices
+            )
+
+        call_payoffs = []
+        ec = brownian.Call_Payoff(strike_px)
+
+        for price_path in price_paths:
+            call_payoffs.append(ec.get_payoff(price_path[-1]))
+
+        # * 100 since options are in blocks of 100
+        return np.average(call_payoffs) * 100
 
     async def update_options_quotes(self):
         """
@@ -76,7 +134,7 @@ class Case2ExampleBot(UTCBot):
         quotes at the new theoretical price every time a price update happens. We don't recommend
         that you do this in the actual competition
         """
-        # What should this value actually be?
+        # TODO: What should this value actually be?
         time_to_expiry = 21 / 252
         vol = self.compute_vol_estimate()
 
