@@ -156,24 +156,29 @@ class Case2Algo(UTCBot):
                 theo = self.compute_options_price(
                     flag, self.underlying_price, strike, time_to_expiry, vol
                 )
+                
 
-                bid_response = await self.place_order(
-                    asset_name,
-                    pb.OrderSpecType.LIMIT,
-                    pb.OrderSpecSide.BID,
-                    1,  # How should this quantity be chosen?
-                    theo - 0.30,  # How should this price be chosen?
-                )
-                assert bid_response.ok
+                price = self.derivatives[asset_name].price
+                if price <= theo * 0.98:
 
-                ask_response = await self.place_order(
-                    asset_name,
-                    pb.OrderSpecType.LIMIT,
-                    pb.OrderSpecSide.ASK,
-                    1,
-                    theo + 0.30,
-                )
-                assert ask_response.ok
+                    bid_response = await self.place_order(
+                        asset_name,
+                        pb.OrderSpecType.LIMIT,
+                        pb.OrderSpecSide.BID,
+                        10,  # How should this quantity be chosen?
+                        theo - 0.30,  # How should this price be chosen?
+                    )
+                    assert bid_response.ok
+
+                if price >= theo * 1.02:
+                    ask_response = await self.place_order(
+                        asset_name,
+                        pb.OrderSpecType.LIMIT,
+                        pb.OrderSpecSide.ASK,
+                        10,
+                        theo + 0.30,
+                    )
+                    assert ask_response.ok
 
     def calc_price_helper(self, book: object) -> float:
         if len(book) < 3:
