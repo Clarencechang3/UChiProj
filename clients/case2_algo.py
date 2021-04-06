@@ -182,10 +182,20 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecSide.BID,
                         10,  # How should this quantity be chosen?
                         theo - 0.30,  # How should this price be chosen?
-                        assert bid_response.ok
                     )
-                    
-
+                    assert bid_response.ok
+                    total_delta = 0
+                    for asset, qty in positions.items():
+                        if qty >= 0:
+                            self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
+                            total_delta += self.derivatives[asset].delta
+                    if total_delta > 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, total_delta)
+                        assert hedge_response.ok
+                    if total_delta < 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, total_delta)
+                        assert hedge_response.ok
+                        
                 if price >= theo * 1.02:
                     ask_response = await self.place_order(
                         asset_name,
@@ -193,9 +203,19 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecSide.ASK,
                         10,
                         theo + 0.30,
-                        assert ask_response.ok
                     )
-                    
+                    assert ask_response.ok
+                    total_delta = 0
+                    for asset, qty in positions.items():
+                        if qty >= 0:
+                            self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
+                            total_delta += self.derivatives[asset].delta
+                    if total_delta > 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, total_delta)
+                        assert hedge_response.ok
+                    if total_delta < 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, total_delta)
+                        assert hedge_response.ok
 
     def calc_price_helper(self, book: object) -> float:
         if len(book) < 3:
