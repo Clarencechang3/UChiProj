@@ -14,17 +14,31 @@ import numpy as np
 import asyncio
 import random
 import math
+from scipy import stats
 
 option_strikes = [90, 95, 100, 105, 110]
 
 
 class derivative(str):
+    def d1_calc(self, price, strike, time_to_expiry, vol):
+        return (math.log(price/strike) + (volatility**2)/2*time_to_expiry)/(volatility*math.sqrt(time_to_expiry))
+    def d2_calc(self, d1, vol, time_to_expiry):
+        return d1 - vol*math.sqrt(time_to_expiry)
+
+    def delta(self, d1):
+        if flag == "C":
+            return stats.norm.cdf(d1)
+        else:
+            return stats.norm.cdf(d1) - 1
+    
     def __init__(self, asset_name: str, flag: str):
         self.time_to_expiry = 26
         self.asset_name = asset_name
         self.price = 100
         self.flag = flag
-
+        self.d1 = 0
+        self.d2 = 0
+        self.delta = 0
 
 class Case2Algo(UTCBot):
     async def handle_round_started(self):
@@ -54,6 +68,7 @@ class Case2Algo(UTCBot):
 
         # Stores the current day (starting from 0 and ending at 5). This is a floating point number,
         # meaning that it includes information about partial days
+        #should change this to update whenever we receive a new market update
         self.current_day = 0
 
         # Stores the starting value of the underlying asset
@@ -149,7 +164,7 @@ class Case2Algo(UTCBot):
         # TODO: What should this value actually be?
         time_to_expiry = 21 / 252
         vol = self.compute_vol_estimate()
-
+        
         for strike in option_strikes:
             for flag in ["C", "P"]:
                 asset_name = f"UC{strike}{flag}"
@@ -167,8 +182,9 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecSide.BID,
                         10,  # How should this quantity be chosen?
                         theo - 0.30,  # How should this price be chosen?
+                        assert bid_response.ok
                     )
-                    assert bid_response.ok
+                    
 
                 if price >= theo * 1.02:
                     ask_response = await self.place_order(
@@ -177,8 +193,9 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecSide.ASK,
                         10,
                         theo + 0.30,
+                        assert ask_response.ok
                     )
-                    assert ask_response.ok
+                    
 
     def calc_price_helper(self, book: object) -> float:
         if len(book) < 3:
