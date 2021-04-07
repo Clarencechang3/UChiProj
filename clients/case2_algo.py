@@ -25,12 +25,14 @@ class derivative(str):
     def d2_calc(self, d1, vol, time_to_expiry):
         return d1 - vol*math.sqrt(time_to_expiry)
 
-    def delta(self, d1):
+    def delta_calc(self, d1):
         if flag == "C":
             return stats.norm.cdf(d1)
         else:
             return stats.norm.cdf(d1) - 1
-    
+    def gamma(self, delta, u_price, vol, time_to_expiry):
+        return delta/(u_price*vol*math.sqrt(time_to_expiry))
+
     def __init__(self, asset_name: str, flag: str):
         self.time_to_expiry = 26
         self.asset_name = asset_name
@@ -185,15 +187,14 @@ class Case2Algo(UTCBot):
                     )
                     assert bid_response.ok
                     total_delta = 0
-                    for asset, qty in positions.items():
-                        if qty >= 0:
-                            self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
-                            total_delta += self.derivatives[asset].delta
-                    if total_delta > 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, total_delta)
+                    hedge = delta_hedge()
+                    if hedge > 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
+                         pb.OrderSpecSide.ASK, hedge)
                         assert hedge_response.ok
-                    if total_delta < 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, total_delta)
+                    if hedge < 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
+                         pb.OrderSpecSide.BID, hedge)
                         assert hedge_response.ok
                         
                 if price >= theo * 1.02:
@@ -205,18 +206,26 @@ class Case2Algo(UTCBot):
                         theo + 0.30,
                     )
                     assert ask_response.ok
-                    total_delta = 0
-                    for asset, qty in positions.items():
-                        if qty >= 0:
-                            self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
-                            total_delta += self.derivatives[asset].delta
-                    if total_delta > 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, total_delta)
+                    hedge = delta_hedge()
+                    if hedge > 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
+                         pb.OrderSpecSide.ASK, hedge)
                         assert hedge_response.ok
-                    if total_delta < 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, total_delta)
+                    if hedge < 0:
+                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
+                         pb.OrderSpecSide.BID, hedge)
                         assert hedge_response.ok
-
+    def delta_hedge():
+        hedge_amount = 0
+        for asset, qty in self.positions.items():           
+            if asset_name != "UC" and qty >= 0:
+                self.derivative[asset].d1 = self.derivative[asset].d1_calc
+                self.derivative[asset].delta = self.derivative[asset].delta_calc(
+                    self.derivative[asset].d1
+                )
+                hedge_amount += self.derivatives[asset].delta
+        return hedge_amount
+                
     def calc_price_helper(self, book: object) -> float:
         if len(book) < 3:
             bid = ask = 0
