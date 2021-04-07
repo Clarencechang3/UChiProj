@@ -6,58 +6,36 @@ import numpy as np
 import scipy
 
 
-class garch(object):
-    def __init__(self, returns):
-        """
-        To get returns, simply find log(asset[OPEN]) - log(asset[CLOSE])
-        for a specified asset.
-        """
-        self.returns = returns * 100
-        self.variance = self.garch_filter(self.garch_optimization())
-        self.coeffs = self.garch_optimization()
+class garman_klass_volatility:
+    def __init__(
+        self,
+        n: int,
+        highs: list,
+        lows: list,
+        closing_prices: list,
+        opening_prices: list,
+    ):
+        self.n = n
+        self.highs = np.array(highs)
+        self.lows = np.array(lows)
+        self.close = np.array(closing_prices)
+        self.open = np.array(opening_prices)
 
-    def garch_filter(self, params):
-        """
-        Function returning the variance expression for a GARCH process
-        """
-
-        omega = params[0]
-        alpha = params[1]
-        beta = params[2]
-
-        length = len(self.returns)
-
-        variance = np.zeros(length)
-
-        for i in range(length):
-            if i == 0:
-                variance[i] = omega / (1 - alpha - beta)
-            else:
-                variance[i] = (
-                    omega + alpha * self.returns[i - 1] ** 2 + beta * variance[i - 1]
+    # calculates the garman_klass_volatility values of input
+    def calc_vol(self):
+        w = 251 / self.n
+        vol = np.power(
+            w
+            * (
+                0.5 * np.power(np.log(np.divide(self.highs, self.lows)), 2)
+                - (
+                    (2 * np.log(2) - 1)
+                    * np.power(np.log(np.divide(self.close, self.open))),
+                    2,
                 )
-
-        return variance
-
-    def garch_log_likelihood(self, parameters):
-        sigma_2 = self.garch_filter(parameters)
-
-        return -np.sum(-np.log(sigma_2) - self.returns ** 2 / sigma_2)
-
-    def garch_optimization(self):
-        parameters = [0.1, 0.05, 0.92]
-
-        opt = scipy.optimize.minimize(
-            self.garch_log_likelihood,
-            parameters,
-            bounds=((0.001, 1), (0.001, 1), (0.001, 1)),
+            ),
+            0.5,
         )
 
-        variance = 0.1 ** 2 + opt.x[0] / (1 - opt.x[1] - opt.x[2])
-
-        return np.append(opt.x, variance)
-
-
-class har(object):
-    def __init__(self):
-        pass
+        # returns np array of volatility values
+        return vol
