@@ -38,6 +38,9 @@ class Case2Algo(UTCBot):
         self.positions = {}
         self.previous_day = 0
 
+        # TODO: optimize strategy according to number of competitors in market; update w/ market updates
+        self.num_competitors = 0
+
         # maps asset name to derivative object
         self.derivatives = {}
 
@@ -58,6 +61,7 @@ class Case2Algo(UTCBot):
 
         # Stores the starting value of the underlying asset
         self.underlying_price = 100
+        self.historical_prices = [100]
 
     def compute_implied_volatility(self) -> float:
         """
@@ -87,21 +91,41 @@ class Case2Algo(UTCBot):
         # returns weighted average of implied volatility
         return total_vol / total_weight
 
-    def compute_vol_estimate(self) -> float:
+    def compute_vol_estimate(self, longterm: bool) -> float:
         """
         This function is used to provide an estimate of underlying's volatility. Because this is
         an example bot, we just use a placeholder value here. We recommend that you look into
         different ways of finding what the true volatility of the underlying is.
         """
+        returns = np.asarray(self.historical_prices, dtype=np.float)
 
-        # calculate log_returns here; use np array?
-        log_returns = []
+        # for longterm purposes, simply use historical volatility
+        if longterm:
+            # Returns should be length 1000
+            assert(len(returns) == 1000)
 
-        return volatility_blending.blend(log_returns, longterm=False)
+            closing_prices = np.take(returns, (199, 399, 599, 799, 999))
+            opening_prices = np.take(returns, (0, 200, 400, 600, 800))
 
-    # TODO: Research various pricing models
+            arr_returns = np.reshape((200, 5))
+            arr_highs = np.max(arr_returns, axis=0)
+            arr_lows = np.min(arr_returns, axis=0)
+            
+            vol = volatility.garman_klass_volatility(
+                n=len(self.historical_prices), 
+                highs= arr_highs,
+                lows= arr_lows,
+                closing_prices=closing_prices, 
+                opening_prices=opening_prices
+            )
+
+        # for shorter term, blend several useful models to incorporate
+        # long and short-term
+        else:
+            return volatility_blending.blend(returns)
+
     # Takes in volatility calculated in volatility.py
-    def compute_options_price(
+    def compute_longterm_options_price(
         self,
         flag: str,
         underlying_px: float,
@@ -109,34 +133,48 @@ class Case2Algo(UTCBot):
         time_to_expiry: float,
         volatility: float,
     ) -> float:
-        """
-        This function should compute the price of an option given the provided parameters. Some
-        important questions you may want to think about are:
-            - What are the units associated with each of these quantities?
-            - What formula should you use to compute the price of the option?
-            - Are there tricks you can use to do this more quickly?
-        You may want to look into the py_vollib library, which is installed by default in your
-        virtual environment.
-        """
+       
+        # Hyperparameters
         paths = 50
         drift = 0.08
         dt = 1 / 251
         T = 1
-        price_paths = []
+
+        price_paths = np.asarray([])
 
         for _ in range(0, paths):
             price_paths.append(
                 brownian.Brownian(underlying_px, drift, volatility, dt, T).prices
             )
 
-        call_payoffs = []
-        ec = brownian.Call_Payoff(strike_px)
+        if flag == "P":
+            put_payoffs = []
+            ep = brownian.Put_Payoff(strike_px)
 
-        for price_path in price_paths:
-            call_payoffs.append(ec.get_payoff(price_path[-1]))
+            for price_path in price_paths:
+                call_payoffs.append(ec.get_payoff(price_path[-1]))
 
-        # * 100 since options are in blocks of 100
-        return np.average(call_payoffs) * 100
+            return np.average(call_payoffs) * 100
+
+        else:
+            call_payoffs = []
+            ec = brownian.Call_Payoff(strike_px)
+
+            for price_path in price_paths:
+                put_payoffs.append(ep.get_payoff(price_path[-1]))
+
+            return np.average(put_payoffs) * 100
+
+    # Takes in volatility calculated in volatility.py
+    def compute_shortterm_options_price(
+        self,
+        flag: str,
+        underlying_px: float,
+        strike_px: float,
+        time_to_expiry: float,
+        volatility: float,
+    ) -> float:
+        return 0
 
     async def update_options_quotes(self):
         """
@@ -146,17 +184,17 @@ class Case2Algo(UTCBot):
         quotes at the new theoretical price every time a price update happens. We don't recommend
         that you do this in the actual competition
         """
-        # TODO: What should this value actually be?
-        time_to_expiry = 21 / 252
-        vol = self.compute_vol_estimate()
+        # calculates the volatility of the underlying
+        vol = self.compute_vol_estimate(longterm=False)
 
         for strike in option_strikes:
             for flag in ["C", "P"]:
                 asset_name = f"UC{strike}{flag}"
-                theo = self.compute_options_price(
+                time_to_expiry = self.derivates[asset_name].time_to_expiry
+
+                theo = self.compute_shortterm_options_price(
                     flag, self.underlying_price, strike, time_to_expiry, vol
                 )
-                
 
                 price = self.derivatives[asset_name].price
                 if price <= theo * 0.98:
@@ -247,6 +285,8 @@ class Case2Algo(UTCBot):
                 float(book.bids[0].px) + float(book.asks[0].px)
             ) / 2
 
+            self.historical_prices.append(self.underlying_price)
+
             for strike in option_strikes:
                 for flag in ["C", "P"]:
                     asset_name = f"UC{strike}{flag}"
@@ -278,11 +318,33 @@ class Case2Algo(UTCBot):
                     if derivative_obj.time_to_expiry < 1:
                         # derivative has expired
                         self.derivatives.pop(asset)
+        elif (
+            kind == "generic_msg"
+            and update.generic_msg.event_type == pb.GenericMessageType.ROUND_ENDED
+        ):
+            # TODO: Add logic for offloading at the end of the round
+
+            longterm_prices = {}
+
+            vol = self.compute_vol_estimate(longterm=True)
+
+            for strike in option_strikes:
+                for flag in ["C", "P"]:
+                    asset_name = f"UC{strike}{flag}"
+
+                    # compute longterm prices
+                    longterm_prices[asset_name] = self.compute_longterm_options_price(
+                        flag,
+                        self.underlying_price,
+                        strike,
+                        self.derivatives[asset_name].time_to_expiry,
+                        vol,
+                    )
+
+            # TODO: Risk management
 
         elif kind == "trade_msg":
-            # There are other pieces of information the exchange provides feeds for. See if you can
-            # find ways to use them to your advantage (especially when more than one competitor is
-            # in the market)
+            # There are other pieces of information the exchange provides feeds for. 
             pass
 
 

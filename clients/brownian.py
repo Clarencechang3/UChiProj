@@ -23,6 +23,17 @@ class Call_Payoff:
             return 0
 
 
+class Put_Payoff:
+    def __init__(self, strike):
+        self.strike = strike
+
+    def get_payoff(self, stock_price):
+        if stock_price < self.strike:
+            return self.strike - stock_price
+        else:
+            return 0
+
+
 class Brownian:
     def simulate_paths(self):
         while self.T - self.dt > 0:  # While time remains
