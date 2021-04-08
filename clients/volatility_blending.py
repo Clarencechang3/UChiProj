@@ -3,7 +3,7 @@ import numpy as np
 import arch
 
 
-def blend(returns) -> float:
+def blend(returns, last_volatility) -> float:
     """
     Blends the volatility estimates of the selected volatility models.
     Returns the estimated volatility for the asset.
@@ -18,15 +18,22 @@ def blend(returns) -> float:
     garch_fitted = garch.fit()
     g_pred = garch_fitted.forecast()
 
-    alpha_2 = 0.3
+    alpha_2 = 0.2
     figarch = arch.arch_model(returns, vol="figarch", p=1)
     figarch_fitted = figarch.fit()
     f_pred = figarch_fitted.forecast()
 
-    alpha_3 = 0.3
+    alpha_3 = 0.2
     egarch = arch.arch_model(returns, vol="egarch", p=1, o=1, q=1)
     egarch_fitted = egarch.fit()
     e_pred = egarch_fitted.forecast()
 
+    alpha_4 = 0.2
+
     # convert variance to volatility and return value
-    return alpha_1 * g_pred + alpha_2 * f_pred + alpha_3 * e_pred
+    return (
+        alpha_1 * g_pred
+        + alpha_2 * f_pred
+        + alpha_3 * e_pred
+        + alpha_4 * last_volatility
+    )

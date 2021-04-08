@@ -9,6 +9,7 @@ import brownian
 import implied_volatility
 import volatility
 import volatility_blending
+import py_vollib
 
 import numpy as np
 import asyncio
@@ -21,17 +22,21 @@ option_strikes = [90, 95, 100, 105, 110]
 
 class derivative(str):
     def d1_calc(self, price, strike, time_to_expiry, vol):
-        return (math.log(price/strike) + (volatility**2)/2*time_to_expiry)/(volatility*math.sqrt(time_to_expiry))
+        return (math.log(price / strike) + (volatility ** 2) / 2 * time_to_expiry) / (
+            volatility * math.sqrt(time_to_expiry)
+        )
+
     def d2_calc(self, d1, vol, time_to_expiry):
-        return d1 - vol*math.sqrt(time_to_expiry)
+        return d1 - vol * math.sqrt(time_to_expiry)
 
     def delta_calc(self, d1):
-        if flag == "C":
+        if self.flag == "C":
             return stats.norm.cdf(d1)
         else:
             return stats.norm.cdf(d1) - 1
+
     def gamma(self, delta, u_price, vol, time_to_expiry):
-        return delta/(u_price*vol*math.sqrt(time_to_expiry))
+        return delta / (u_price * vol * math.sqrt(time_to_expiry))
 
     def __init__(self, asset_name: str, flag: str):
         self.time_to_expiry = 26
@@ -41,6 +46,7 @@ class derivative(str):
         self.d1 = 0
         self.d2 = 0
         self.delta = 0
+
 
 class Case2Algo(UTCBot):
     async def handle_round_started(self):
@@ -53,6 +59,9 @@ class Case2Algo(UTCBot):
         # to zero for every asset.
         self.positions = {}
         self.previous_day = 0
+
+        # initially equal to aggregate sample volatility
+        self.last_volatility = 1.6879372939912174
 
         # TODO: optimize strategy according to number of competitors in market; update w/ market updates
         self.num_competitors = 0
@@ -73,7 +82,7 @@ class Case2Algo(UTCBot):
 
         # Stores the current day (starting from 0 and ending at 5). This is a floating point number,
         # meaning that it includes information about partial days
-        #should change this to update whenever we receive a new market update
+        # should change this to update whenever we receive a new market update
         self.current_day = 0
 
         # Stores the starting value of the underlying asset
@@ -119,27 +128,46 @@ class Case2Algo(UTCBot):
         # for longterm purposes, simply use historical volatility
         if longterm:
             # Returns should be length 1000
-            assert(len(returns) == 1000)
+            assert len(returns) == 1000
 
             closing_prices = np.take(returns, (199, 399, 599, 799, 999))
             opening_prices = np.take(returns, (0, 200, 400, 600, 800))
 
-            arr_returns = np.reshape((200, 5))
+            arr_returns = np.reshape(returns, newshape=(200, 5))
             arr_highs = np.max(arr_returns, axis=0)
             arr_lows = np.min(arr_returns, axis=0)
-            
+
             vol = volatility.garman_klass_volatility(
-                n=len(self.historical_prices), 
-                highs= arr_highs,
-                lows= arr_lows,
-                closing_prices=closing_prices, 
-                opening_prices=opening_prices
+                n=len(self.historical_prices),
+                highs=arr_highs,
+                lows=arr_lows,
+                closing_prices=closing_prices,
+                opening_prices=opening_prices,
             )
+
+            return vol
 
         # for shorter term, blend several useful models to incorporate
         # long and short-term
         else:
-            return volatility_blending.blend(returns)
+            vol = volatility_blending.blend(returns, self.last_volatility)
+            self.last_volatility = vol
+            return vol
+
+    # vol computed as short-term estimate (compute_vol_estimate)
+    def compute_shortterm_options_price(
+        self,
+        flag: str,
+        underlying_px: float,
+        strike_px: float,
+        time_to_expiry: float,
+        volatility: float,
+    ) -> float:
+        # price using black-scholes
+
+        return py_vollib.black_scholes.undiscounted_black(
+            F=underlying_px, K=strike_px, sigma=volatility, flag=flag, t=time_to_expiry
+        )
 
     # Takes in volatility calculated in volatility.py
     def compute_longterm_options_price(
@@ -150,9 +178,9 @@ class Case2Algo(UTCBot):
         time_to_expiry: float,
         volatility: float,
     ) -> float:
-       
+
         # Hyperparameters
-        paths = 50
+        paths = 100
         drift = 0.08
         dt = 1 / 251
         T = 1
@@ -169,29 +197,18 @@ class Case2Algo(UTCBot):
             ep = brownian.Put_Payoff(strike_px)
 
             for price_path in price_paths:
-                call_payoffs.append(ec.get_payoff(price_path[-1]))
+                put_payoffs.append(ep.get_payoff(price_path[-1]))
 
-            return np.average(call_payoffs) * 100
+            return np.average(put_payoffs) * 100
 
         else:
             call_payoffs = []
             ec = brownian.Call_Payoff(strike_px)
 
             for price_path in price_paths:
-                put_payoffs.append(ep.get_payoff(price_path[-1]))
+                call_payoffs.append(ep.get_payoff(price_path[-1]))
 
             return np.average(put_payoffs) * 100
-
-    # Takes in volatility calculated in volatility.py
-    def compute_shortterm_options_price(
-        self,
-        flag: str,
-        underlying_px: float,
-        strike_px: float,
-        time_to_expiry: float,
-        volatility: float,
-    ) -> float:
-        return 0
 
     async def update_options_quotes(self):
         """
@@ -207,7 +224,7 @@ class Case2Algo(UTCBot):
         for strike in option_strikes:
             for flag in ["C", "P"]:
                 asset_name = f"UC{strike}{flag}"
-                time_to_expiry = self.derivates[asset_name].time_to_expiry
+                time_to_expiry = self.derivatives[asset_name].time_to_expiry
 
                 theo = self.compute_shortterm_options_price(
                     flag, self.underlying_price, strike, time_to_expiry, vol
@@ -224,17 +241,19 @@ class Case2Algo(UTCBot):
                         theo - 0.30,  # How should this price be chosen?
                     )
                     assert bid_response.ok
-                    total_delta = 0
-                    hedge = delta_hedge()
+                    # total_delta = 0
+                    hedge = self.delta_hedge()
                     if hedge > 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
-                         pb.OrderSpecSide.ASK, hedge)
+                        hedge_response = await self.place_order(
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                        )
                         assert hedge_response.ok
                     if hedge < 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
-                         pb.OrderSpecSide.BID, hedge)
+                        hedge_response = await self.place_order(
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, hedge
+                        )
                         assert hedge_response.ok
-                        
+
                 if price >= theo * 1.02:
                     ask_response = await self.place_order(
                         asset_name,
@@ -244,26 +263,29 @@ class Case2Algo(UTCBot):
                         theo + 0.30,
                     )
                     assert ask_response.ok
-                    hedge = delta_hedge()
+                    hedge = self.delta_hedge()
                     if hedge > 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
-                         pb.OrderSpecSide.ASK, hedge)
+                        hedge_response = await self.place_order(
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                        )
                         assert hedge_response.ok
                     if hedge < 0:
-                        hedge_response = await self.place_order("UC", pb.OrderSpecType.MARKET,
-                         pb.OrderSpecSide.BID, hedge)
+                        hedge_response = await self.place_order(
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, hedge
+                        )
                         assert hedge_response.ok
-    def delta_hedge():
+
+    def delta_hedge(self):
         hedge_amount = 0
-        for asset, qty in self.positions.items():           
-            if asset_name != "UC" and qty >= 0:
-                self.derivative[asset].d1 = self.derivative[asset].d1_calc
-                self.derivative[asset].delta = self.derivative[asset].delta_calc(
-                    self.derivative[asset].d1
+        for asset, qty in self.positions.items():
+            if asset != "UC" and qty >= 0:
+                self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
+                self.derivatives[asset].delta = self.derivatives[asset].delta_calc(
+                    self.derivatives[asset].d1
                 )
                 hedge_amount += self.derivatives[asset].delta
         return hedge_amount
-                
+
     def calc_price_helper(self, book: object) -> float:
         if len(book) < 3:
             bid = ask = 0
@@ -390,7 +412,7 @@ class Case2Algo(UTCBot):
             # TODO: Risk management
 
         elif kind == "trade_msg":
-            # There are other pieces of information the exchange provides feeds for. 
+            # There are other pieces of information the exchange provides feeds for.
             pass
 
 
