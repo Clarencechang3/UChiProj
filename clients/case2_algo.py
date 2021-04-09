@@ -5,17 +5,141 @@ from utc_bot import UTCBot, start_bot
 import proto.utc_bot as pb
 import betterproto
 
-import brownian
-import implied_volatility
-import volatility
-import volatility_blending
+import arch
 import py_vollib
+from py_vollib.black_scholes.implied_volatility import implied_volatility
 
 import numpy as np
 import asyncio
 import random
 import math
 from scipy import stats
+
+# ---------------------------------------BROWNIAN MOTION---------------------------------------
+
+
+class Call_Payoff:
+    def __init__(self, strike):
+        self.strike = strike
+
+    def get_payoff(self, stock_price):
+        if stock_price > self.strike:
+            return stock_price - self.strike
+        else:
+            return 0
+
+
+class Put_Payoff:
+    def __init__(self, strike):
+        self.strike = strike
+
+    def get_payoff(self, stock_price):
+        if stock_price < self.strike:
+            return self.strike - stock_price
+        else:
+            return 0
+
+
+class Brownian:
+    def simulate_paths(self):
+        while self.T - self.dt > 0:  # While time remains
+            dWt = np.random.normal(0, math.sqrt(self.dt))
+            dYt = self.drift * self.dt + self.volatiltiy * dWt  # Change in price
+            self.current_price += dYt  # Apply price change
+            self.prices.append(self.current_price)
+
+            self.T -= self.dt  # Account for time interval
+
+    def __init__(self, price, drift, volatility, dt, T):
+        self.current_price = self.initial_price = price
+        self.drift = drift
+        self.volatiltiy = volatility
+        self.dt = dt
+        self.T = T
+        self.prices = []
+        self.simulate_paths()
+
+
+# ---------------------------------------/BROWNIAN MOTION---------------------------------------
+
+# ---------------------------------------VOL BLENDING---------------------------------------
+
+
+def blend(returns, last_volatility) -> float:
+    """
+    Blends the volatility estimates of the selected volatility models.
+    Returns the estimated volatility for the asset.
+    """
+    # if it's the first day, don't want to volatility blend as this will be highly inaccurate
+    # Instead, use a pre-computed volatility (average volatility of sample paths)
+    if len(returns) < 200:
+        return 1.6879372939912174
+
+    alpha_1 = 0.4
+    garch = arch.arch_model(returns, vol="garch", p=1, o=0, q=1)
+    garch_fitted = garch.fit()
+    g_pred = garch_fitted.forecast()
+
+    alpha_2 = 0.2
+    figarch = arch.arch_model(returns, vol="figarch", p=1)
+    figarch_fitted = figarch.fit()
+    f_pred = figarch_fitted.forecast()
+
+    alpha_3 = 0.2
+    egarch = arch.arch_model(returns, vol="egarch", p=1, o=1, q=1)
+    egarch_fitted = egarch.fit()
+    e_pred = egarch_fitted.forecast()
+
+    alpha_4 = 0.2
+
+    # convert variance to volatility and return value
+    return (
+        alpha_1 * np.sqrt(g_pred.variance)
+        + alpha_2 * np.sqrt(f_pred.variance)
+        + alpha_3 * np.sqrt(e_pred.variance)
+        + alpha_4 * last_volatility
+    )
+
+
+# ---------------------------------------/VOL BLENDING---------------------------------------
+
+# ---------------------------------------GARMAN KLASS---------------------------------------
+class garman_klass_volatility:
+    def __init__(
+        self,
+        n: int,
+        highs: list,
+        lows: list,
+        closing_prices: list,
+        opening_prices: list,
+    ):
+        self.n = n
+        self.highs = np.array(highs)
+        self.lows = np.array(lows)
+        self.close = np.array(closing_prices)
+        self.open = np.array(opening_prices)
+
+    # calculates the garman_klass_volatility values of input
+    def calc_vol(self):
+        w = 251 / self.n
+        vol = np.power(
+            w
+            * (
+                0.5 * np.power(np.log(np.divide(self.highs, self.lows)), 2)
+                - (
+                    (2 * np.log(2) - 1)
+                    * np.power(np.log(np.divide(self.close, self.open))),
+                    2,
+                )
+            ),
+            0.5,
+        )
+
+        # returns np array of volatility values
+        return vol
+
+
+# ---------------------------------------/GARMAN KLASS---------------------------------------
 
 option_strikes = [90, 95, 100, 105, 110]
 
@@ -110,12 +234,13 @@ class Case2Algo(UTCBot):
                 weight = math.exp(0.5 * math.log(self.underlying_price / strike) ** 2)
 
                 # computes BS implied volatility using py_vollib
-                vol = implied_volatility.implied_volatility_calc(
+                vol = implied_volatility(
                     self.derivatives[asset_name].price,
                     self.underlying_price,
                     strike,
-                    self.derivatives[asset_name].time_to_expiry,
-                    flag,
+                    self.derivatives[asset_name].time_to_expiry / 251,
+                    0,
+                    flag.lower(),
                 )
 
                 self.derivatives[asset_name].vol = vol
@@ -141,7 +266,7 @@ class Case2Algo(UTCBot):
             arr_highs = np.max(arr_returns, axis=0)
             arr_lows = np.min(arr_returns, axis=0)
 
-            vol = volatility.garman_klass_volatility(
+            vol = garman_klass_volatility(
                 n=len(self.historical_prices),
                 highs=arr_highs,
                 lows=arr_lows,
@@ -154,7 +279,7 @@ class Case2Algo(UTCBot):
         # for shorter term, blend several useful models to incorporate
         # long and short-term
         else:
-            vol = volatility_blending.blend(returns, self.last_volatility)
+            vol = blend(returns, self.last_volatility)
             self.last_volatility = vol
             return vol
 
@@ -196,13 +321,11 @@ class Case2Algo(UTCBot):
         price_paths = np.asarray([])
 
         for _ in range(0, paths):
-            price_paths.append(
-                brownian.Brownian(underlying_px, drift, volatility, dt, T).prices
-            )
+            price_paths.append(Brownian(underlying_px, drift, volatility, dt, T).prices)
 
         if flag == "P":
             put_payoffs = []
-            ep = brownian.Put_Payoff(strike_px)
+            ep = Put_Payoff(strike_px)
 
             for price_path in price_paths:
                 put_payoffs.append(ep.get_payoff(price_path[-1]))
@@ -211,7 +334,7 @@ class Case2Algo(UTCBot):
 
         else:
             call_payoffs = []
-            ec = brownian.Call_Payoff(strike_px)
+            ec = Call_Payoff(strike_px)
 
             for price_path in price_paths:
                 call_payoffs.append(ec.get_payoff(price_path[-1]))
@@ -392,7 +515,7 @@ class Case2Algo(UTCBot):
                 self.previous_day = self.current_day_int
 
                 # all derivatives are now 1 day closer to expiration
-                for asset, derivative_obj in self.derivatives.items():
+                for _, derivative_obj in self.derivatives.items():
                     derivative_obj.time_to_expiry -= 1
 
                     if derivative_obj.time_to_expiry < 1:
