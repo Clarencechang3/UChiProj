@@ -90,7 +90,7 @@ class Case2Algo(UTCBot):
         # meaning that it includes information about partial days
         # should change this to update whenever we receive a new market update
         self.current_day = 0
-
+        self.updates = 0
         # Stores the starting value of the underlying asset
         self.underlying_price = 100
         self.historical_prices = [100]
@@ -229,6 +229,12 @@ class Case2Algo(UTCBot):
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
         print("underlying volatility (short-term): ", vol)
+        self.updates += 1
+        if self.updates % 200 == 0:
+            self.current_day += 1
+            for asset in self.positions:
+                self.derivatives[asset].time_to_expiry -= 1
+            self.delta_hedge()
 
         for strike in option_strikes:
             for flag in ["C", "P"]:
