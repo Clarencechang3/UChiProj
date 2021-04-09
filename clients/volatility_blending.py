@@ -32,8 +32,8 @@ def blend(returns, last_volatility) -> float:
 
     # convert variance to volatility and return value
     return (
-        alpha_1 * g_pred
-        + alpha_2 * f_pred
-        + alpha_3 * e_pred
+        alpha_1 * np.sqrt(g_pred.variance)
+        + alpha_2 * np.sqrt(f_pred.variance)
+        + alpha_3 * np.sqrt(e_pred.variance)
         + alpha_4 * last_volatility
     )

@@ -20,14 +20,14 @@ from scipy import stats
 option_strikes = [90, 95, 100, 105, 110]
 
 
-class derivative(str):
+class derivative:
     def d1_calc(self, price, strike, time_to_expiry, vol):
-        return (math.log(price / strike) + (volatility ** 2) / 2 * time_to_expiry) / (
-            volatility * math.sqrt(time_to_expiry)
-        )
+        T = time_to_expiry / 251
+        return (math.log(price / strike) + (vol ** 2) / 2 * T) / (vol * math.sqrt(T))
 
     def d2_calc(self, d1, vol, time_to_expiry):
-        return d1 - vol * math.sqrt(time_to_expiry)
+        T = time_to_expiry / 251
+        return d1 - vol * math.sqrt(T)
 
     def delta_calc(self, d1):
         if self.flag == "C":
@@ -36,9 +36,10 @@ class derivative(str):
             return stats.norm.cdf(d1) - 1
 
     def gamma(self, delta, u_price, vol, time_to_expiry):
-        return delta / (u_price * vol * math.sqrt(time_to_expiry))
+        T = time_to_expiry / 251
+        return delta / (u_price * vol * math.sqrt(T))
 
-    def __init__(self, asset_name: str, flag: str):
+    def __init__(self, asset_name: str, flag: str, strike: float, vol: float):
         self.time_to_expiry = 26
         self.asset_name = asset_name
         self.price = 100
@@ -46,6 +47,8 @@ class derivative(str):
         self.d1 = 0
         self.d2 = 0
         self.delta = 0
+        self.strike = strike
+        self.vol = vol
 
 
 class Case2Algo(UTCBot):
@@ -73,11 +76,14 @@ class Case2Algo(UTCBot):
 
         for strike in option_strikes:
             for flag in ["C", "P"]:
-                assert not f"UC{strike}{flag}" in self.positions
-                self.positions[f"UC{strike}{flag}"] = 0
-                assert not f"UC{strike}{flag}" in self.derivatives
-                self.derivatives[f"UC{strike}{flag}"] = derivative(
-                    f"UC{strike}{flag}", "C" if (flag == "C") else "P"
+                asset_name = "UC" + str(strike) + flag
+                assert not asset_name in self.positions
+                self.positions[asset_name] = 0
+                assert not asset_name in self.derivatives
+
+                flag = "C" if (flag == "C") else "P"
+                self.derivatives[asset_name] = derivative(
+                    asset_name, "test", strike, 0.1
                 )
 
         # Stores the current day (starting from 0 and ending at 5). This is a floating point number,
@@ -91,7 +97,7 @@ class Case2Algo(UTCBot):
 
     def compute_implied_volatility(self) -> float:
         """
-        This function estimates the implied volatility of the underlying asset. Utilizes the
+        This function estimates the implied volatility of the option. Utilizes the
         provided py_vollib package and the templated code from Piazza.
         """
         total_vol = 0
@@ -99,17 +105,20 @@ class Case2Algo(UTCBot):
 
         for strike in option_strikes:
             for flag in ["C", "P"]:
+                asset_name = "UC" + str(strike) + str(flag)
                 # Weight to be used for the weighted average
                 weight = math.exp(0.5 * math.log(self.underlying_price / strike) ** 2)
 
                 # computes BS implied volatility using py_vollib
                 vol = implied_volatility.implied_volatility_calc(
-                    self.derivatives[f"UC{strike}{flag}"].price,
+                    self.derivatives[asset_name].price,
                     self.underlying_price,
                     strike,
-                    self.derivatives[f"UC{strike}{flag}"].time_to_expiry,
+                    self.derivatives[asset_name].time_to_expiry,
                     flag,
                 )
+
+                self.derivatives[asset_name].vol = vol
 
                 total_vol += weight * vol
                 total_weight += weight
@@ -118,11 +127,6 @@ class Case2Algo(UTCBot):
         return total_vol / total_weight
 
     def compute_vol_estimate(self, longterm: bool) -> float:
-        """
-        This function is used to provide an estimate of underlying's volatility. Because this is
-        an example bot, we just use a placeholder value here. We recommend that you look into
-        different ways of finding what the true volatility of the underlying is.
-        """
         returns = np.asarray(self.historical_prices, dtype=np.float)
 
         # for longterm purposes, simply use historical volatility
@@ -166,7 +170,11 @@ class Case2Algo(UTCBot):
         # price using black-scholes
 
         return py_vollib.black_scholes.undiscounted_black(
-            F=underlying_px, K=strike_px, sigma=volatility, flag=flag, t=time_to_expiry
+            F=underlying_px,
+            K=strike_px,
+            sigma=volatility,
+            flag=flag.lower(),
+            t=time_to_expiry / 251,
         )
 
     # Takes in volatility calculated in volatility.py
@@ -183,7 +191,7 @@ class Case2Algo(UTCBot):
         paths = 100
         drift = 0.08
         dt = 1 / 251
-        T = 1
+        T = time_to_expiry / 251
 
         price_paths = np.asarray([])
 
@@ -206,7 +214,7 @@ class Case2Algo(UTCBot):
             ec = brownian.Call_Payoff(strike_px)
 
             for price_path in price_paths:
-                call_payoffs.append(ep.get_payoff(price_path[-1]))
+                call_payoffs.append(ec.get_payoff(price_path[-1]))
 
             return np.average(put_payoffs) * 100
 
@@ -220,17 +228,23 @@ class Case2Algo(UTCBot):
         """
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
+        print("underlying volatility (short-term): ", vol)
 
         for strike in option_strikes:
             for flag in ["C", "P"]:
-                asset_name = f"UC{strike}{flag}"
+                asset_name = "UC" + str(strike) + str(flag)
                 time_to_expiry = self.derivatives[asset_name].time_to_expiry
 
                 theo = self.compute_shortterm_options_price(
                     flag, self.underlying_price, strike, time_to_expiry, vol
                 )
 
+                print("short-term option price for ", asset_name, ": ", theo)
+
                 price = self.derivatives[asset_name].price
+
+                print("last-traded option price for ", asset_name, ": ", price)
+
                 if price <= theo * 0.98:
 
                     bid_response = await self.place_order(
@@ -238,7 +252,7 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecType.LIMIT,
                         pb.OrderSpecSide.BID,
                         10,  # How should this quantity be chosen?
-                        theo - 0.30,  # How should this price be chosen?
+                        round(theo - 0.30, 1),  # How should this price be chosen?
                     )
                     assert bid_response.ok
                     # total_delta = 0
@@ -250,7 +264,7 @@ class Case2Algo(UTCBot):
                         assert hedge_response.ok
                     if hedge < 0:
                         hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, hedge
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
                         )
                         assert hedge_response.ok
 
@@ -260,7 +274,7 @@ class Case2Algo(UTCBot):
                         pb.OrderSpecType.LIMIT,
                         pb.OrderSpecSide.ASK,
                         10,
-                        theo + 0.30,
+                        round(theo + 0.30, 1),
                     )
                     assert ask_response.ok
                     hedge = self.delta_hedge()
@@ -271,61 +285,53 @@ class Case2Algo(UTCBot):
                         assert hedge_response.ok
                     if hedge < 0:
                         hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, hedge
+                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
                         )
                         assert hedge_response.ok
 
     def delta_hedge(self):
+        print("hedging...")
+
         hedge_amount = 0
         for asset, qty in self.positions.items():
             if asset != "UC" and qty >= 0:
-                self.derivatives[asset].d1 = self.derivatives[asset].d1_calc
+                price = self.underlying_price
+                strike = self.derivatives[asset].strike
+                time_to_expiry = self.derivatives[asset].time_to_expiry
+                vol = self.derivatives[asset].vol
+
+                self.derivatives[asset].d1 = self.derivatives[asset].d1_calc(
+                    price, strike, time_to_expiry, vol
+                )
+
                 self.derivatives[asset].delta = self.derivatives[asset].delta_calc(
                     self.derivatives[asset].d1
                 )
+
                 hedge_amount += self.derivatives[asset].delta
-        return hedge_amount
 
-    def calc_price_helper(self, book: object) -> float:
-        if len(book) < 3:
-            bid = ask = 0
-            quantity = 0
-            # find weighted bid price
-            for i in range(len(book)):
-                quantity += float(book.bids[i].qty)
-                bid += float(book.bids[i].px) * float(book.bids[i].qty)
+        print("hedging amount: ", str(hedge_amount))
+        return int(hedge_amount)
 
-            bid /= quantity
+    def calc_price_helper(self, book: object) -> (float, float):
+        # bid = ask = 0
+        # quantity = 0
+        # # find weighted bid price
+        # for i in range(3):
+        #     quantity += float(book.bids[i].qty)
+        #     bid += float(book.bids[i].px) * float(book.bids[i].qty)
 
-            quantity = 0
-            # find weighted ask price
-            for i in range(len(book)):
-                quantity += float(book.asks[i].qty)
-                ask += float(book.asks[i].px) * float(book.asks[i].qty)
+        # bid /= quantity
 
-            ask /= quantity
+        # quantity = 0
+        # # find weighted ask price
+        # for i in range(3):
+        #     quantity += float(book.asks[i].qty)
+        #     ask += float(book.asks[i].px) * float(book.asks[i].qty)
 
-            return (bid, ask)
+        # ask /= quantity
 
-        else:
-            bid = ask = 0
-            quantity = 0
-            # find weighted bid price
-            for i in range(3):
-                quantity += float(book.bids[i].qty)
-                bid += float(book.bids[i].px) * float(book.bids[i].qty)
-
-            bid /= quantity
-
-            quantity = 0
-            # find weighted ask price
-            for i in range(3):
-                quantity += float(book.asks[i].qty)
-                ask += float(book.asks[i].px) * float(book.asks[i].qty)
-
-            ask /= quantity
-
-            return bid, ask
+        return float(book.bids[0].px), float(book.asks[0].px)
 
     async def handle_exchange_update(self, update: pb.FeedMessage):
         kind, _ = betterproto.which_one_of(update, "msg")
@@ -357,7 +363,7 @@ class Case2Algo(UTCBot):
 
             for strike in option_strikes:
                 for flag in ["C", "P"]:
-                    asset_name = f"UC{strike}{flag}"
+                    asset_name = "UC" + str(strike) + str(flag)
                     book_ = update.market_snapshot_msg.books[asset_name]
 
                     bid, ask = self.calc_price_helper(book_)
@@ -384,8 +390,8 @@ class Case2Algo(UTCBot):
                     derivative_obj.time_to_expiry -= 1
 
                     if derivative_obj.time_to_expiry < 1:
-                        # derivative has expired
-                        self.derivatives.pop(asset)
+                        derivative_obj.time_to_expiry = 0.5
+
         elif (
             kind == "generic_msg"
             and update.generic_msg.event_type == pb.GenericMessageType.ROUND_ENDED
@@ -398,7 +404,7 @@ class Case2Algo(UTCBot):
 
             for strike in option_strikes:
                 for flag in ["C", "P"]:
-                    asset_name = f"UC{strike}{flag}"
+                    asset_name = "UC" + str(strike) + str(flag)
 
                     # compute longterm prices
                     longterm_prices[asset_name] = self.compute_longterm_options_price(
