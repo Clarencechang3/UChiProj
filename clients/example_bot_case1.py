@@ -243,7 +243,6 @@ class PositionTrackerBot(UTCBot):
         elif kind == "market_snapshot_msg":
             for asset in (FUTURES + ["RORUSD"]):
                 book = update.market_snapshot_msg.books[asset]
-
                 mid: "Optional[float]"
                 if len(book.asks) > 0:
                     if len(book.bids) > 0:
@@ -254,7 +253,6 @@ class PositionTrackerBot(UTCBot):
                     mid = float(book.bids[0].px)
                 else:
                     mid = None
-
                 self.mid[asset] = mid
         #Competition event messages
         elif kind == "generic_msg":
