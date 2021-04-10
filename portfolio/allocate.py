@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.linalg import inv
 import pandas as pd
-import scipy
+from scipy.optimize import newton
 
 
 # List of valid assets in portfolio
@@ -38,6 +38,9 @@ n_assets = len(assets)
 # Global storage of price data
 historical_returns = pd.read_csv("Case3HistoricalPrices.csv", index_col=0)
 
+
+
+#########################Calculate Risk Aversion ##############################################
 # Uses 180-day volatility weighting
 risk = np.asarray(historical_returns.iloc[-180:].std())
 weighted = np.divide(np.repeat(1, n_assets), risk)
@@ -53,14 +56,32 @@ cov = historical_returns.cov()
 global_return = historical_returns.mean().multiply(market_weights['weights'].values).sum()
 global_variance = np.matmul(market_weights.values.T, np.matmul(cov.values, market_weights.values))
 
-risk_aversion = global_return / global_variance
-
+risk_aversion = global_return / global_variance    
+######################### Calculate Implied Returns##############################################
 #implied equilibrium returns of all assets
-def implied_rets(risk_aversion, cov_matrix, weights):
-    returns = risk_aversion * cov_matrix.dot(weights)
-    return returns
 
-implied_returns = implied_rets(risk_aversion, cov, market_weights)
+implied_returns_eq = lambda weights : risk_aversion * cov.dot(weights)
+optim_weights = newton(implied_returns_eq, market_weights) 
+
+implied_returns = implied_returns_eq(optim_weights) 
+
+##########################CALCULATE VIEWS ######################################################
+#Constants
+n_views = 3
+
+Q = np.array([0.0925, 0.005, 0.055])
+P = np.ones((n_views, n_assets))
+Omega = 
+
+
+
+
+
+
+
+
+
+
 #Array of views
 Q = np.array() 
 #P represents the matrix identifying assets involved in each view
@@ -80,9 +101,39 @@ BL_weights = inv(cov.values).dot(BL_returns)
 BL_weights = BL_weights/sum(BL_weights)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def allocate_portfolio(asset_prices):
     # Add any new pricing information passed into function
     historical_returns.append(asset_prices)
 
     weights = np.repeat(1 / n_assets, n_assets)
     return weights
+
+
+
+
+
+
+##Old Code
+
+#implied equilibrium returns of all assets
+def implied_rets(risk_aversion, cov_matrix, weights):
+    returns = risk_aversion * cov_matrix.dot(weights)
+    return returns
+
+
+
+
+implied_returns = implied_rets(risk_aversion, cov, market_weights)
+
