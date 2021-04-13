@@ -442,6 +442,19 @@ class Case2Algo(UTCBot):
         print("hedging amount: ", str(hedge_amount))
         return int(hedge_amount)
 
+    def parity_check(self):
+        at_parity = []
+        for strike in option_strikes:
+            call = "UC" + strike + "C" 
+            put = "UC" + strike + "P"
+            if (self.derivatives[put].price + self.underlying_price != self.derivatives[call].price + strike):
+                at_parity.append(False)
+            else:
+                at_parity.append(True)
+        return at_parity
+    #checks if put-call parity exists for each strike price
+    #returns a list of bools, first spot in list corresponds to K = 90
+
     def calc_price_helper(self, book: object) -> (float, float):
         # bid = ask = 0
         # quantity = 0
