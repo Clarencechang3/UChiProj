@@ -75,32 +75,18 @@ def blend(returns, last_volatility, time) -> float:
     # if len(returns) < 200:
     #     return 1.6879372939912174
 
-    print("RETURNS HERE: ", str(returns[-1]))
+    if len(returns) > 20:
+        returns = returns[-20:]
 
-    alpha_1 = 0.2
-    garch = arch.arch_model(returns, mean="Zero", vol="GARCH")
-    garch_fitted = garch.fit()
+    alpha_1 = 0.4
+    garch = arch.arch_model(returns, mean="HARX")
+    garch_fitted = garch.fit(update_freq=0)
     g_pred = garch_fitted.forecast()
 
-    alpha_2 = 0.1
-    figarch = arch.arch_model(returns, vol="figarch", p=1)
-    figarch_fitted = figarch.fit()
-    f_pred = figarch_fitted.forecast()
-
-    alpha_3 = 0.1
-    egarch = arch.arch_model(returns, vol="egarch", p=1, o=1, q=1)
-    egarch_fitted = egarch.fit()
-    e_pred = egarch_fitted.forecast()
-
-    alpha_5 = 0.2
+    length = len(g_pred.variance["h.1"])
 
     # convert variance to volatility and return value
-    return (
-        alpha_1 * np.sqrt(g_pred.variance)
-        + alpha_2 * np.sqrt(f_pred.variance)
-        + alpha_3 * np.sqrt(e_pred.variance)
-        + alpha_5 * last_volatility
-    )
+    return alpha_1 * np.sqrt(g_pred.variance["h.1"].iloc[length - 1])
 
 
 # ---------------------------------------/VOL BLENDING---------------------------------------
@@ -190,7 +176,7 @@ class Case2Algo(UTCBot):
         self.previous_day = 0
 
         # initially equal to aggregate sample volatility
-        self.last_volatility = 1.6879372939912174
+        self.last_volatility = 0.8
 
         # TODO: optimize strategy according to number of competitors in market; update w/ market updates
         self.num_competitors = 0
@@ -245,8 +231,6 @@ class Case2Algo(UTCBot):
                     flag.lower(),
                 )
 
-                self.derivatives[asset_name].vol = vol
-
                 total_vol += weight * vol
                 total_weight += weight
 
@@ -254,8 +238,8 @@ class Case2Algo(UTCBot):
         return total_vol / total_weight
 
     def compute_vol_estimate(self, longterm: bool) -> float:
-        if len(self.historical_prices) <= 1:
-            returns = np.asarray([100, 100])  # adjust for beginning of round
+        if len(self.historical_prices) <= 5:
+            return self.compute_implied_volatility()  # adjust for beginning of round
         else:
             returns = np.asarray(self.historical_prices, dtype=np.float)
 
@@ -288,7 +272,10 @@ class Case2Algo(UTCBot):
         else:
             print("DAY: ", self.current_day)
             vol = blend(returns, self.last_volatility, self.current_day)
-            vol += 0.4 * self.compute_implied_volatility()
+
+            print("blended vol: ", vol)
+            print("implied vol: ", self.compute_implied_volatility())
+            vol += 0.6 * self.compute_implied_volatility()
 
             self.last_volatility = vol
             return vol
@@ -304,12 +291,10 @@ class Case2Algo(UTCBot):
     ) -> float:
         # price using black-scholes
 
-        print("computed volatility: ", volatility)
-        print("time to expiration", time_to_expiry)
         return py_vollib.black_scholes.undiscounted_black(
             F=underlying_px,
             K=strike_px,
-            sigma=volatility * np.sqrt(time_to_expiry / 251),
+            sigma=volatility,
             flag=flag.lower(),
             t=time_to_expiry / 251,
         )
