@@ -65,32 +65,37 @@ class Brownian:
 # ---------------------------------------VOL BLENDING---------------------------------------
 
 
-def blend(returns, last_volatility) -> float:
+def blend(returns, last_volatility, time) -> float:
     """
     Blends the volatility estimates of the selected volatility models.
     Returns the estimated volatility for the asset.
     """
     # if it's the first day, don't want to volatility blend as this will be highly inaccurate
     # Instead, use a pre-computed volatility (average volatility of sample paths)
-    if len(returns) < 200:
+    # if len(returns) < 200:
+    #     return 1.6879372939912174
+
+    print("RETURNS HERE: ", str(returns[-1]))
+
+    if len(returns) <= 50:
         return 1.6879372939912174
 
-    alpha_1 = 0.4
-    garch = arch.arch_model(returns, vol="garch", p=1, o=0, q=1)
+    alpha_1 = 0.2
+    garch = arch.arch_model(returns, mean="Zero", vol="GARCH")
     garch_fitted = garch.fit()
     g_pred = garch_fitted.forecast()
 
-    alpha_2 = 0.2
+    alpha_2 = 0.15
     figarch = arch.arch_model(returns, vol="figarch", p=1)
     figarch_fitted = figarch.fit()
     f_pred = figarch_fitted.forecast()
 
-    alpha_3 = 0.2
+    alpha_3 = 0.15
     egarch = arch.arch_model(returns, vol="egarch", p=1, o=1, q=1)
     egarch_fitted = egarch.fit()
     e_pred = egarch_fitted.forecast()
 
-    alpha_4 = 0.2
+    alpha_4 = 0.4
 
     # convert variance to volatility and return value
     return (
@@ -252,11 +257,16 @@ class Case2Algo(UTCBot):
         return total_vol / total_weight
 
     def compute_vol_estimate(self, longterm: bool) -> float:
-        returns = np.asarray(self.historical_prices, dtype=np.float)
+        if len(self.historical_prices) <= 1:
+            returns = np.asarray([100, 100])  # adjust for beginning of round
+        else:
+            returns = np.asarray(self.historical_prices, dtype=np.float)
 
+        print("RETURNS", str(returns))
         # for longterm purposes, simply use historical volatility
         if longterm:
             # Returns should be length 1000
+            print("weekly prices: ", str(returns))
             assert len(returns) == 1000
 
             closing_prices = np.take(returns, (199, 399, 599, 799, 999))
@@ -279,7 +289,9 @@ class Case2Algo(UTCBot):
         # for shorter term, blend several useful models to incorporate
         # long and short-term
         else:
-            vol = blend(returns, self.last_volatility)
+            print("DAY: ", self.current_day)
+            vol = blend(returns, self.last_volatility, self.current_day)
+
             self.last_volatility = vol
             return vol
 
@@ -294,10 +306,12 @@ class Case2Algo(UTCBot):
     ) -> float:
         # price using black-scholes
 
+        print("computed volatility: ", volatility)
+        print("time to expiration", time_to_expiry)
         return py_vollib.black_scholes.undiscounted_black(
             F=underlying_px,
             K=strike_px,
-            sigma=volatility,
+            sigma=volatility * np.sqrt(time_to_expiry / 251),
             flag=flag.lower(),
             t=time_to_expiry / 251,
         )
@@ -351,10 +365,9 @@ class Case2Algo(UTCBot):
         """
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
-        print("underlying volatility (short-term): ", vol)
+        print("underlying volatility estimate (short-term): ", vol)
         self.updates += 1
         if self.updates % 200 == 0:
-            self.current_day += 1
             for asset in self.positions:
                 self.derivatives[asset].time_to_expiry -= 1
             self.delta_hedge()
@@ -380,7 +393,7 @@ class Case2Algo(UTCBot):
                         asset_name,
                         pb.OrderSpecType.LIMIT,
                         pb.OrderSpecSide.BID,
-                        10,  # How should this quantity be chosen?
+                        5,  # How should this quantity be chosen?
                         round(theo - 0.30, 1),  # How should this price be chosen?
                     )
                     assert bid_response.ok
