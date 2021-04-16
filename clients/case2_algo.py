@@ -77,32 +77,29 @@ def blend(returns, last_volatility, time) -> float:
 
     print("RETURNS HERE: ", str(returns[-1]))
 
-    if len(returns) <= 50:
-        return 1.6879372939912174
-
     alpha_1 = 0.2
     garch = arch.arch_model(returns, mean="Zero", vol="GARCH")
     garch_fitted = garch.fit()
     g_pred = garch_fitted.forecast()
 
-    alpha_2 = 0.15
+    alpha_2 = 0.1
     figarch = arch.arch_model(returns, vol="figarch", p=1)
     figarch_fitted = figarch.fit()
     f_pred = figarch_fitted.forecast()
 
-    alpha_3 = 0.15
+    alpha_3 = 0.1
     egarch = arch.arch_model(returns, vol="egarch", p=1, o=1, q=1)
     egarch_fitted = egarch.fit()
     e_pred = egarch_fitted.forecast()
 
-    alpha_4 = 0.4
+    alpha_5 = 0.2
 
     # convert variance to volatility and return value
     return (
         alpha_1 * np.sqrt(g_pred.variance)
         + alpha_2 * np.sqrt(f_pred.variance)
         + alpha_3 * np.sqrt(e_pred.variance)
-        + alpha_4 * last_volatility
+        + alpha_5 * last_volatility
     )
 
 
@@ -291,6 +288,7 @@ class Case2Algo(UTCBot):
         else:
             print("DAY: ", self.current_day)
             vol = blend(returns, self.last_volatility, self.current_day)
+            vol += 0.4 * self.compute_implied_volatility()
 
             self.last_volatility = vol
             return vol
@@ -458,15 +456,19 @@ class Case2Algo(UTCBot):
     def parity_check(self):
         at_parity = []
         for strike in option_strikes:
-            call = "UC" + strike + "C" 
+            call = "UC" + strike + "C"
             put = "UC" + strike + "P"
-            if (self.derivatives[put].price + self.underlying_price != self.derivatives[call].price + strike):
+            if (
+                self.derivatives[put].price + self.underlying_price
+                != self.derivatives[call].price + strike
+            ):
                 at_parity.append(False)
             else:
                 at_parity.append(True)
         return at_parity
-    #checks if put-call parity exists for each strike price
-    #returns a list of bools, first spot in list corresponds to K = 90
+
+    # checks if put-call parity exists for each strike price
+    # returns a list of bools, first spot in list corresponds to K = 90
 
     def calc_price_helper(self, book: object) -> (float, float):
         # bid = ask = 0
