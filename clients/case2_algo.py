@@ -128,7 +128,10 @@ class garman_klass_volatility:
 
 
 # ---------------------------------------/GARMAN KLASS---------------------------------------
-
+delta_threshold = 2000
+gamma_threshold = 20
+theta_threshold = 25
+vega_threshold = 35
 option_strikes = [90, 95, 100, 105, 110]
 
 
@@ -147,9 +150,16 @@ class derivative:
         else:
             return stats.norm.cdf(d1) - 1
 
-    def gamma(self, delta, u_price, vol, time_to_expiry):
+    def gamma_calc(self, d1, u_price, vol, time_to_expiry):
         T = time_to_expiry / 251
-        return delta / (u_price * vol * math.sqrt(T))
+        return stats.norm.pdf(d1) / (u_price * vol * math.sqrt(T))
+    
+    def vega_calc(self, d1, u_price, time_to_expiry):
+        T = time_to_expiry / 251
+        return stats.norm.pdf(d1)*u_price*math.sqrt(T)
+    def theta_calc(self, d1, u_price, vol, time_to_expiry):
+        T = time_to_expiry/251
+        return -(u_price*stats.norm.pdf(d1)*vol)/(2*sqrt(T))
 
     def __init__(self, asset_name: str, flag: str, strike: float, vol: float):
         self.time_to_expiry = 26
@@ -159,11 +169,51 @@ class derivative:
         self.d1 = 0
         self.d2 = 0
         self.delta = 0
+        self.gamma = 0
+        self.vega = 0
+        self.theta = 0
         self.strike = strike
         self.vol = vol
 
 
 class Case2Algo(UTCBot):
+
+    def risk_limit_check():
+        total_delta = 0
+        total_gamma = 0
+        total_theta = 0
+        total_vega = 0
+
+        for asset, qty in self.positions.items():
+            if asset != "UC" and qty >= 0:
+                price = self.underlying_price
+                strike = self.derivatives[asset].strike
+                time_to_expiry = self.derivatives[asset].time_to_expiry
+                vol = self.derivatives[asset].vol
+
+                self.derivatives[asset].d1 = self.derivatives[asset].d1_calc(
+                    price, strike, time_to_expiry, vol
+                )
+
+                self.derivatives[asset].delta = self.derivatives[asset].delta_calc(
+                    self.derivatives[asset].d1
+                )
+                self.derivatives[asset].gamma = self.derivatives[asset].gamma_calc(self.derivatives[asset].d1,
+                 price, self.derivatives[asset].vol, time_to_expiry)
+                self.derivatives[asset].vega = self.derivatives[asset].vega_calc(self.derivatives[asset].d1, price, time_to_expiry)
+                self.derivatives[asset].theta = self.derivatives[asset].theta_calc(self.derivatives[asset].d1,
+                 price, self.derivatives[asset].vol, time_to_expiry) 
+                total_delta += self.derivatives[asset].delta
+                total_gamma += self.derivatives[asset].gamma
+                total_theta += self.derivatives[asset].theta
+                total_vega += self.derivatives[asset].vega
+        
+        if (total_delta > delta_threshold or total_gamma > gamma_threshold or total_theta > theta_threshold or total_vega > vega_threshold
+        or total_delta < -delta_threshold or total_gamma < -gamma_threshold or total_theta < -theta_threshold or total_vega < -vega_threshold):
+            return True
+        else:
+            return False
+
     async def handle_round_started(self):
         """
         This function is called when the round is started. You should do your setup here, and
@@ -354,65 +404,68 @@ class Case2Algo(UTCBot):
             for asset in self.positions:
                 self.derivatives[asset].time_to_expiry -= 1
             self.delta_hedge()
+        at_limit = self.risk_limit_check()
+        if not at_limit:
+            for strike in option_strikes:
+                for flag in ["C", "P"]:
+                    asset_name = "UC" + str(strike) + str(flag)
+                    time_to_expiry = self.derivatives[asset_name].time_to_expiry
 
-        for strike in option_strikes:
-            for flag in ["C", "P"]:
-                asset_name = "UC" + str(strike) + str(flag)
-                time_to_expiry = self.derivatives[asset_name].time_to_expiry
-
-                theo = self.compute_shortterm_options_price(
-                    flag, self.underlying_price, strike, time_to_expiry, vol
-                )
-
-                print("short-term option price for ", asset_name, ": ", theo)
-
-                price = self.derivatives[asset_name].price
-
-                print("last-traded option price for ", asset_name, ": ", price)
-
-                if price <= theo * 0.98:
-
-                    bid_response = await self.place_order(
-                        asset_name,
-                        pb.OrderSpecType.LIMIT,
-                        pb.OrderSpecSide.BID,
-                        5,  # How should this quantity be chosen?
-                        round(theo - 0.30, 1),  # How should this price be chosen?
+                    theo = self.compute_shortterm_options_price(
+                        flag, self.underlying_price, strike, time_to_expiry, vol
                     )
-                    assert bid_response.ok
+
+                    print("short-term option price for ", asset_name, ": ", theo)
+
+                    price = self.derivatives[asset_name].price
+
+                    print("last-traded option price for ", asset_name, ": ", price)
+
+                    if price <= theo * 0.98 and not price <= theo * 0.5:
+
+                        bid_response = await self.place_order(
+                            asset_name,
+                            pb.OrderSpecType.LIMIT,
+                            pb.OrderSpecSide.BID,
+                            5,  # How should this quantity be chosen?
+                            round(theo - 0.30, 1),  # How should this price be chosen?
+                        )
+                        assert bid_response.ok
                     # total_delta = 0
-                    hedge = self.delta_hedge()
-                    if hedge > 0:
-                        hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
-                        )
-                        assert hedge_response.ok
-                    if hedge < 0:
-                        hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
-                        )
-                        assert hedge_response.ok
+                        hedge = self.delta_hedge()
+                        if hedge > 0:
+                            hedge_response = await self.place_order(
+                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                            )
+                            assert hedge_response.ok
+                        if hedge < 0:
+                            hedge_response = await self.place_order(
+                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
+                            )
+                            assert hedge_response.ok
 
-                if price >= theo * 1.02:
-                    ask_response = await self.place_order(
-                        asset_name,
-                        pb.OrderSpecType.LIMIT,
-                        pb.OrderSpecSide.ASK,
-                        10,
-                        round(theo + 0.30, 1),
-                    )
-                    assert ask_response.ok
-                    hedge = self.delta_hedge()
-                    if hedge > 0:
-                        hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                    if price >= theo * 1.02 and not price >= theo * 1.5:
+                        ask_response = await self.place_order(
+                            asset_name,
+                            pb.OrderSpecType.LIMIT,
+                            pb.OrderSpecSide.ASK,
+                            5,
+                            round(theo + 0.30, 1),
                         )
-                        assert hedge_response.ok
-                    if hedge < 0:
-                        hedge_response = await self.place_order(
-                            "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
-                        )
-                        assert hedge_response.ok
+                        assert ask_response.ok
+                        hedge = self.delta_hedge()
+                        if hedge > 0:
+                            hedge_response = await self.place_order(
+                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                            )
+                            assert hedge_response.ok
+                        if hedge < 0:
+                            hedge_response = await self.place_order(
+                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
+                            )
+                            assert hedge_response.ok
+        
+            
 
     def delta_hedge(self):
         print("hedging...")
