@@ -453,24 +453,9 @@ class Case2Algo(UTCBot):
         baseline_vol = np.median(np.asarray(historical_vol))
 
         if self.compute_implied_volatility() < baseline_vol * 1.20:
-            hedge = self.delta_hedge()
-            if hedge > 0:
-                hedge_response = await self.place_order(
-                    "UC",
-                    pb.OrderSpecType.MARKET,
-                    pb.OrderSpecSide.ASK,
-                    hedge,
-                )
-                assert hedge_response.ok
-            if hedge < 0:
-                hedge_response = await self.place_order(
-                    "UC",
-                    pb.OrderSpecType.MARKET,
-                    pb.OrderSpecSide.BID,
-                    -hedge,
-                )
-                assert hedge_response.ok
-            return
+            take = 0.002
+        else:
+            take = 0.01
 
         at_limit = self.risk_limit_check()
         if not at_limit:
@@ -485,7 +470,7 @@ class Case2Algo(UTCBot):
 
                     price = self.derivatives[asset_name].price
 
-                    if price * 1.05 <= theo and not price * 1.30 <= theo:
+                    if price * 1.05 <= theo and not price * 1.50 <= theo:
                         qty = int(min(5, (theo - price * 1.05) / 0.2))
                         price = (
                             float(
@@ -500,7 +485,15 @@ class Case2Algo(UTCBot):
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.BID,
                             qty,  # How should this quantity be chosen?
-                            round(update.market_snapshot_msg.books[asset_name].bids[0].px + 0.1*(theo - price, 1),  # How should this price be chosen?
+                            round(
+                                float(
+                                    update.market_snapshot_msg.books[asset_name]
+                                    .bids[0]
+                                    .px
+                                )
+                                + take * (theo - price),
+                                1,
+                            ),  # How should this price be chosen?
                         )
                         assert bid_response.ok
                         gamma_hedge = self.gamma_hedge(
@@ -569,7 +562,7 @@ class Case2Algo(UTCBot):
                             )
                             assert hedge_response.ok
 
-                    if price * 0.95 >= theo and not price * 0.8 >= theo:
+                    if price * 0.95 >= theo and not price * 0.7 >= theo:
                         qty = int(min(5, (price * 0.95 - theo) / 0.2))
                         price = (
                             float(
@@ -584,7 +577,15 @@ class Case2Algo(UTCBot):
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.ASK,
                             qty,
-                            round(update.market_snapshot_msg.books[asset_name].asks[0].px + 0.1*(price - theo), 1),
+                            round(
+                                float(
+                                    update.market_snapshot_msg.books[asset_name]
+                                    .asks[0]
+                                    .px
+                                )
+                                - take * (price - theo),
+                                1,
+                            ),
                         )
                         assert ask_response.ok
                         gamma_hedge = self.gamma_hedge(
