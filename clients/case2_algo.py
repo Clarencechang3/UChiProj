@@ -15,6 +15,38 @@ import random
 import math
 from scipy import stats
 
+# ---------------------------------------BINOMIAL MODEL---------------------------------------
+def binomial_model(N, S0, u, r, K):
+    """
+    N = number of binomial iterations
+    S0 = initial stock price
+    u = factor change of upstate
+    r = risk free interest rate per annum
+    K = strike price
+    """
+    d = 1 / u
+    p = (1 + r - d) / (u - d)
+    q = 1 - p
+
+    # make stock price tree
+    stock = np.zeros([N + 1, N + 1])
+    for i in range(N + 1):
+        for j in range(i + 1):
+            stock[j, i] = S0 * (u ** (i - j)) * (d ** j)
+
+    # Generate option prices recursively
+    option = np.zeros([N + 1, N + 1])
+    option[:, N] = np.maximum(np.zeros(N + 1), (stock[:, N] - K))
+    for i in range(N - 1, -1, -1):
+        for j in range(0, i + 1):
+            option[j, i] = (
+                1 / (1 + r) * (p * option[j, i + 1] + q * option[j + 1, i + 1])
+            )
+    return option
+
+
+# ---------------------------------------/BINOMIAL MODEL---------------------------------------
+
 # ---------------------------------------BROWNIAN MOTION---------------------------------------
 
 
@@ -75,13 +107,11 @@ def blend(returns, last_implied, pct_return, time) -> float:
     # if len(returns) < 200:
     #     return 1.6879372939912174
 
-    if len(returns) > 30:
-        returns = returns[-30:]
+    if len(returns) > 6:
+        returns = returns[-6:]
 
-    garch = arch.arch_model(returns, mean="LS")
+    garch = arch.arch_model(returns, mean="HAR")
     res = garch.fit(update_freq=0)
-
-    print(res.params)
 
     omega = res.params["omega"]
     beta = res.params["beta[1]"]
@@ -134,6 +164,7 @@ gamma_threshold = 20
 theta_threshold = -25
 vega_threshold = 35
 option_strikes = [90, 95, 100, 105, 110]
+historical_vol = []
 
 
 class derivative:
@@ -312,11 +343,9 @@ class Case2Algo(UTCBot):
         else:
             returns = np.asarray(self.historical_prices, dtype=np.float)
 
-        print("RETURNS", str(returns))
         # for longterm purposes, simply use historical volatility
         if longterm:
             # Returns should be length 1000
-            print("weekly prices: ", str(returns))
             assert len(returns) == 1000
 
             closing_prices = np.take(returns, (199, 399, 599, 799, 999))
@@ -339,13 +368,11 @@ class Case2Algo(UTCBot):
         # for shorter term, blend several useful models to incorporate
         # long and short-term
         else:
-            print("DAY: ", self.current_day)
             pct_return = self.underlying_price / 100
             vol = 0.3 * blend(returns, self.last_implied, pct_return, self.current_day)
-            print("blend: ", vol / 0.3)
-
-            print("implied vol: ", self.compute_implied_volatility())
             self.last_implied = self.compute_implied_volatility()
+
+            historical_vol.append(self.last_implied)
 
             vol += 0.7 * self.last_implied
 
@@ -421,8 +448,29 @@ class Case2Algo(UTCBot):
         """
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
-        print("short-term vol estimate ", vol)
         self.updates += 1
+
+        baseline_vol = np.median(np.asarray(historical_vol))
+
+        if self.compute_implied_volatility() < baseline_vol * 1.20:
+            hedge = self.delta_hedge()
+            if hedge > 0:
+                hedge_response = await self.place_order(
+                    "UC",
+                    pb.OrderSpecType.MARKET,
+                    pb.OrderSpecSide.ASK,
+                    hedge,
+                )
+                assert hedge_response.ok
+            if hedge < 0:
+                hedge_response = await self.place_order(
+                    "UC",
+                    pb.OrderSpecType.MARKET,
+                    pb.OrderSpecSide.BID,
+                    -hedge,
+                )
+                assert hedge_response.ok
+            return
 
         at_limit = self.risk_limit_check()
         if not at_limit:
@@ -435,14 +483,10 @@ class Case2Algo(UTCBot):
                         flag, self.underlying_price, strike, time_to_expiry, vol
                     )
 
-                    print("short-term option price for ", asset_name, ": ", theo)
-
                     price = self.derivatives[asset_name].price
 
-                    print("last-traded option price for ", asset_name, ": ", price)
-
                     if price * 1.05 <= theo and not price * 1.30 <= theo:
-                        qty = int(max(5, (theo - price * 1.05) / 0.2))
+                        qty = int(min(5, (theo - price * 1.05) / 0.2))
                         price = (
                             float(
                                 update.market_snapshot_msg.books[asset_name].bids[0].px
@@ -459,32 +503,53 @@ class Case2Algo(UTCBot):
                             round(price, 1),  # How should this price be chosen?
                         )
                         assert bid_response.ok
-                        gamma_hedge = self.gamma_hedge(asset_name, qty)
+                        gamma_hedge = self.gamma_hedge(
+                            asset_name, qty, price, strike, time_to_expiry, vol
+                        )
+
                         if gamma_hedge > 0:
-                            if self.derivatives[asset_name].flag == 'P':
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            if self.derivatives[asset_name].flag == "P":
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "C"
+                                )
                             else:
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "P"
+                                )
                             gamma_hedge_response = await self.place_order(
                                 asset,
-                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecType.LIMIT,
                                 pb.OrderSpecSide.ASK,
-                                gamma_hedge,
-                            )
-                            assert hedge_response.ok
-                        if gamma_hedge < 0:
-                            if self.derivatives[asset_name].flag == 'P':
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
-                            else:
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
-                            gamma_hedge_response = await self.place_order(
-                                asset,
-                                pb.OrderSpecType.MARKET,
-                                pb.OrderSpecSide.BID,
-                                -gamma_hedge,
+                                int(gamma_hedge),
+                                round(self.underlying_price, 1),
                             )
                             assert gamma_hedge_response.ok
-                            
+                        if gamma_hedge < 0:
+                            if self.derivatives[asset_name].flag == "P":
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "C"
+                                )
+                            else:
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "P"
+                                )
+                            gamma_hedge_response = await self.place_order(
+                                asset,
+                                pb.OrderSpecType.LIMIT,
+                                pb.OrderSpecSide.BID,
+                                int(-gamma_hedge),
+                                round(self.underlying_price, 1),
+                            )
+                            assert gamma_hedge_response.ok
+
                         # total_delta = 0
                         hedge = self.delta_hedge()
                         if hedge > 0:
@@ -505,7 +570,7 @@ class Case2Algo(UTCBot):
                             assert hedge_response.ok
 
                     if price * 0.95 >= theo and not price * 0.8 >= theo:
-                        qty = int(max(5, (price * 0.95 - theo) / 0.2))
+                        qty = int(min(5, (price * 0.95 - theo) / 0.2))
                         price = (
                             float(
                                 update.market_snapshot_msg.books[asset_name].bids[0].px
@@ -522,29 +587,50 @@ class Case2Algo(UTCBot):
                             round(price, 1),
                         )
                         assert ask_response.ok
-                        gamma_hedge = self.gamma_hedge(asset_name, qty)
+                        gamma_hedge = self.gamma_hedge(
+                            asset_name, qty, price, strike, time_to_expiry, vol
+                        )
+
                         if gamma_hedge > 0:
-                            if self.derivatives[asset_name].flag == 'P':
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            if self.derivatives[asset_name].flag == "P":
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "C"
+                                )
                             else:
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "P"
+                                )
                             gamma_hedge_response = await self.place_order(
                                 asset,
-                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecType.LIMIT,
                                 pb.OrderSpecSide.ASK,
-                                gamma_hedge,
+                                int(gamma_hedge),
+                                round(self.underlying_price, 1),
                             )
-                            assert hedge_response.ok
+                            assert gamma_hedge_response.ok
                         if gamma_hedge < 0:
-                            if self.derivatives[asset_name].flag == 'P':
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            if self.derivatives[asset_name].flag == "P":
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "C"
+                                )
                             else:
-                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                                asset = (
+                                    "UC"
+                                    + str(self.derivatives[asset_name].strike)
+                                    + "P"
+                                )
                             gamma_hedge_response = await self.place_order(
                                 asset,
-                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecType.LIMIT,
                                 pb.OrderSpecSide.BID,
-                                -gamma_hedge,
+                                int(-gamma_hedge),
+                                round(self.underlying_price, 1),
                             )
                             assert gamma_hedge_response.ok
 
@@ -566,7 +652,7 @@ class Case2Algo(UTCBot):
                             )
                             assert hedge_response.ok
         if at_limit:
-            hedge = delta_hedge()
+            hedge = self.delta_hedge()
             if hedge > 0:
                 hedge_response = await self.place_order(
                     "UC",
@@ -583,12 +669,12 @@ class Case2Algo(UTCBot):
                     -hedge,
                 )
                 assert hedge_response.ok
+
     def delta_hedge(self):
-        print("hedging...")
 
         hedge_amount = 0
         for asset, qty in self.positions.items():
-            if asset != "UC" and qty >= 0:
+            if asset != "UC" and qty > 0:
                 price = self.underlying_price
                 strike = self.derivatives[asset].strike
                 time_to_expiry = self.derivatives[asset].time_to_expiry
@@ -604,9 +690,9 @@ class Case2Algo(UTCBot):
 
                 hedge_amount += self.derivatives[asset].delta
 
-        print("hedging amount: ", str(hedge_amount))
-        return int(hedge_amount)
-    def gamma_hedge(self, asset, qty):
+        return math.floor(hedge_amount)
+
+    def gamma_hedge(self, asset, qty, price, strike, time_to_expiry, vol) -> float:
         self.derivatives[asset].d1 = self.derivatives[asset].d1_calc(
             price, strike, time_to_expiry, vol
         )
@@ -614,13 +700,13 @@ class Case2Algo(UTCBot):
             self.derivatives[asset].d1,
             price,
             self.derivatives[asset].vol,
-            time_to_expiry
+            time_to_expiry,
         )
         total_gamma = qty * self.derivatives[asset].gamma
-        if self.derivatives[asset].flag == 'C':
-            hedge_asset = "UC" + str(strike) + 'P'
+        if self.derivatives[asset].flag == "C":
+            hedge_asset = "UC" + str(strike) + "P"
         else:
-            hedge_asset = "UC" + str(strike) + 'C'
+            hedge_asset = "UC" + str(strike) + "C"
         self.derivatives[hedge_asset].d1 = self.derivatives[hedge_asset].d1_calc(
             price, strike, time_to_expiry, vol
         )
@@ -628,9 +714,9 @@ class Case2Algo(UTCBot):
             self.derivatives[hedge_asset].d1,
             price,
             self.derivatives[hedge_asset].vol,
-            time_to_expiry
+            time_to_expiry,
         )
-        hedge_amount = total_gamma / self.derivatives[hedge_asset].gamma
+        hedge_amount = float(total_gamma) / self.derivatives[hedge_asset].gamma
         return hedge_amount
 
     def parity_check(self):
@@ -665,10 +751,8 @@ class Case2Algo(UTCBot):
             fill_msg = update.fill_msg
 
             if fill_msg.order_side == pb.FillMessageSide.BUY:
-                print("bought: ", fill_msg.asset, " quantity: ", fill_msg.filled_qty)
                 self.positions[fill_msg.asset] += update.fill_msg.filled_qty
             else:
-                print("sold: ", fill_msg.asset, " quantity: ", fill_msg.filled_qty)
                 self.positions[fill_msg.asset] -= update.fill_msg.filled_qty
 
         elif kind == "market_snapshot_msg":
