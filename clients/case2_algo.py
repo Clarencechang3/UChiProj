@@ -547,7 +547,7 @@ class Case2Algo(UTCBot):
                                 -gamma_hedge,
                             )
                             assert gamma_hedge_response.ok
-                            
+
                         hedge = self.delta_hedge()
                         if hedge > 0:
                             hedge_response = await self.place_order(
@@ -565,7 +565,24 @@ class Case2Algo(UTCBot):
                                 -hedge,
                             )
                             assert hedge_response.ok
-
+        if at_limit:
+            hedge = delta_hedge()
+            if hedge > 0:
+                hedge_response = await self.place_order(
+                    "UC",
+                    pb.OrderSpecType.MARKET,
+                    pb.OrderSpecSide.ASK,
+                    hedge,
+                )
+                assert hedge_response.ok
+            if hedge < 0:
+                hedge_response = await self.place_order(
+                    "UC",
+                    pb.OrderSpecType.MARKET,
+                    pb.OrderSpecSide.BID,
+                    -hedge,
+                )
+                assert hedge_response.ok
     def delta_hedge(self):
         print("hedging...")
 
