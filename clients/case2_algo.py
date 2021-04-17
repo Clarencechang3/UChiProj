@@ -65,7 +65,7 @@ class Brownian:
 # ---------------------------------------VOL BLENDING---------------------------------------
 
 
-def blend(returns, last_volatility, time) -> float:
+def blend(returns, last_implied, pct_return, time) -> float:
     """
     Blends the volatility estimates of the selected volatility models.
     Returns the estimated volatility for the asset.
@@ -75,18 +75,19 @@ def blend(returns, last_volatility, time) -> float:
     # if len(returns) < 200:
     #     return 1.6879372939912174
 
-    if len(returns) > 20:
-        returns = returns[-20:]
+    if len(returns) > 30:
+        returns = returns[-30:]
 
-    alpha_1 = 0.4
-    garch = arch.arch_model(returns, mean="HARX")
-    garch_fitted = garch.fit(update_freq=0)
-    g_pred = garch_fitted.forecast()
+    garch = arch.arch_model(returns, mean="LS")
+    res = garch.fit(update_freq=0)
 
-    length = len(g_pred.variance["h.1"])
+    print(res.params)
 
-    # convert variance to volatility and return value
-    return alpha_1 * np.sqrt(g_pred.variance["h.1"].iloc[length - 1])
+    omega = res.params["omega"]
+    beta = res.params["beta[1]"]
+    alpha = res.params["alpha[1]"]
+
+    return (omega + alpha * pct_return + beta * last_implied) ** 0.5
 
 
 # ---------------------------------------/VOL BLENDING---------------------------------------
@@ -146,9 +147,9 @@ class derivative:
 
     def delta_calc(self, d1):
         if self.flag == "C":
-            return stats.norm.cdf(d1)
+            return 100 * stats.norm.cdf(d1)
         else:
-            return stats.norm.cdf(d1) - 1
+            return 100 * (stats.norm.cdf(d1) - 1)
 
     def gamma_calc(self, d1, u_price, vol, time_to_expiry):
         T = time_to_expiry / 251
@@ -244,7 +245,7 @@ class Case2Algo(UTCBot):
         self.previous_day = 0
 
         # initially equal to aggregate sample volatility
-        self.last_volatility = 0.8
+        self.last_implied = 0.5
 
         # TODO: optimize strategy according to number of competitors in market; update w/ market updates
         self.num_competitors = 0
@@ -339,13 +340,15 @@ class Case2Algo(UTCBot):
         # long and short-term
         else:
             print("DAY: ", self.current_day)
-            vol = blend(returns, self.last_volatility, self.current_day)
+            pct_return = self.underlying_price / 100
+            vol = 0.3 * blend(returns, self.last_implied, pct_return, self.current_day)
+            print("blend: ", vol / 0.3)
 
-            print("blended vol: ", vol)
             print("implied vol: ", self.compute_implied_volatility())
-            vol += 0.6 * self.compute_implied_volatility()
+            self.last_implied = self.compute_implied_volatility()
 
-            self.last_volatility = vol
+            vol += 0.7 * self.last_implied
+
             return vol
 
     # vol computed as short-term estimate (compute_vol_estimate)
@@ -359,13 +362,15 @@ class Case2Algo(UTCBot):
     ) -> float:
         # price using black-scholes
 
-        return py_vollib.black_scholes.undiscounted_black(
+        val = py_vollib.black_scholes.undiscounted_black(
             F=underlying_px,
             K=strike_px,
             sigma=volatility,
             flag=flag.lower(),
             t=time_to_expiry / 251,
         )
+
+        return val
 
     # Takes in volatility calculated in volatility.py
     def compute_longterm_options_price(
@@ -406,7 +411,7 @@ class Case2Algo(UTCBot):
 
             return np.average(put_payoffs) * 100
 
-    async def update_options_quotes(self):
+    async def update_options_quotes(self, update):
         """
         This function will update the quotes that the bot has currently put into the market.
 
@@ -417,7 +422,6 @@ class Case2Algo(UTCBot):
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
         print("short-term vol estimate ", vol)
-        print("monte carlo brownian motion estimate ", )
         self.updates += 1
 
         at_limit = self.risk_limit_check()
@@ -437,14 +441,22 @@ class Case2Algo(UTCBot):
 
                     print("last-traded option price for ", asset_name, ": ", price)
 
-                    if price <= theo * 0.98 and not price <= theo * 0.5:
-
+                    if price * 1.05 <= theo and not price * 1.30 <= theo:
+                        qty = int(max(5, (theo - price * 1.05) / 0.2))
+                        price = (
+                            float(
+                                update.market_snapshot_msg.books[asset_name].bids[0].px
+                            )
+                            + float(
+                                update.market_snapshot_msg.books[asset_name].asks[0].px
+                            )
+                        ) / 2
                         bid_response = await self.place_order(
                             asset_name,
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.BID,
-                            2,  # How should this quantity be chosen?
-                            round(theo - 0.30, 1),  # How should this price be chosen?
+                            qty,  # How should this quantity be chosen?
+                            round(price, 1),  # How should this price be chosen?
                         )
                         assert bid_response.ok
                         # total_delta = 0
@@ -466,13 +478,22 @@ class Case2Algo(UTCBot):
                             )
                             assert hedge_response.ok
 
-                    if price >= theo * 1.02 and not price >= theo * 1.5:
+                    if price * 0.95 >= theo and not price * 0.8 >= theo:
+                        qty = int(max(5, (price * 0.95 - theo) / 0.2))
+                        price = (
+                            float(
+                                update.market_snapshot_msg.books[asset_name].bids[0].px
+                            )
+                            + float(
+                                update.market_snapshot_msg.books[asset_name].asks[0].px
+                            )
+                        ) / 2
                         ask_response = await self.place_order(
                             asset_name,
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.ASK,
-                            2,
-                            round(theo + 0.30, 1),
+                            qty,
+                            round(price, 1),
                         )
                         assert ask_response.ok
                         hedge = self.delta_hedge()
@@ -535,23 +556,6 @@ class Case2Algo(UTCBot):
     # returns a list of bools, first spot in list corresponds to K = 90
 
     def calc_price_helper(self, book: object) -> (float, float):
-        # bid = ask = 0
-        # quantity = 0
-        # # find weighted bid price
-        # for i in range(3):
-        #     quantity += float(book.bids[i].qty)
-        #     bid += float(book.bids[i].px) * float(book.bids[i].qty)
-
-        # bid /= quantity
-
-        # quantity = 0
-        # # find weighted ask price
-        # for i in range(3):
-        #     quantity += float(book.asks[i].qty)
-        #     ask += float(book.asks[i].px) * float(book.asks[i].qty)
-
-        # ask /= quantity
-
         return float(book.bids[0].px), float(book.asks[0].px)
 
     async def handle_exchange_update(self, update: pb.FeedMessage):
@@ -581,10 +585,14 @@ class Case2Algo(UTCBot):
             for _, derivative_obj in self.derivatives.items():
                 derivative_obj.time_to_expiry -= 0.005
 
+            prev_price = self.underlying_price
             # Compute the mid price of the market and store it
             self.underlying_price = (
                 float(book.bids[0].px) + float(book.asks[0].px)
             ) / 2
+
+            if float(abs(prev_price - self.underlying_price)) / prev_price > 0.05:
+                self.delta_hedge()
 
             self.historical_prices.append(self.underlying_price)
 
@@ -597,7 +605,7 @@ class Case2Algo(UTCBot):
 
                     self.derivatives[asset_name].price = (bid + ask) / 2
 
-            await self.update_options_quotes()
+            await self.update_options_quotes(update)
 
         elif (
             kind == "generic_msg"
