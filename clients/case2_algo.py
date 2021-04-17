@@ -459,6 +459,32 @@ class Case2Algo(UTCBot):
                             round(price, 1),  # How should this price be chosen?
                         )
                         assert bid_response.ok
+                        gamma_hedge = self.gamma_hedge(asset_name, qty)
+                        if gamma_hedge > 0:
+                            if self.derivatives[asset_name].flag == 'P':
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            else:
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                            gamma_hedge_response = await self.place_order(
+                                asset,
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.ASK,
+                                gamma_hedge,
+                            )
+                            assert hedge_response.ok
+                        if gamma_hedge < 0:
+                            if self.derivatives[asset_name].flag == 'P':
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            else:
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                            gamma_hedge_response = await self.place_order(
+                                asset,
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.BID,
+                                -gamma_hedge,
+                            )
+                            assert gamma_hedge_response.ok
+                            
                         # total_delta = 0
                         hedge = self.delta_hedge()
                         if hedge > 0:
@@ -537,6 +563,32 @@ class Case2Algo(UTCBot):
 
         print("hedging amount: ", str(hedge_amount))
         return int(hedge_amount)
+    def gamma_hedge(self, asset, qty):
+        self.derivatives[asset].d1 = self.derivatives[asset].d1_calc(
+            price, strike, time_to_expiry, vol
+        )
+        self.derivatives[asset].gamma = self.derivatives[asset].gamma_calc(
+            self.derivatives[asset].d1,
+            price,
+            self.derivatives[asset].vol,
+            time_to_expiry
+        )
+        total_gamma = qty * self.derivatives[asset].gamma
+        if self.derivatives[asset].flag == 'C':
+            hedge_asset = "UC" + str(strike) + 'P'
+        else:
+            hedge_asset = "UC" + str(strike) + 'C'
+        self.derivatives[hedge_asset].d1 = self.derivatives[hedge_asset].d1_calc(
+            price, strike, time_to_expiry, vol
+        )
+        self.derivatives[hedge_asset].gamma = self.derivatives[hedge_asset].gamma_calc(
+            self.derivatives[hedge_asset].d1,
+            price,
+            self.derivatives[hedge_asset].vol,
+            time_to_expiry
+        )
+        hedge_amount = total_gamma / self.derivatives[hedge_asset].gamma
+        return hedge_amount
 
     def parity_check(self):
         at_parity = []
