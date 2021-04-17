@@ -500,7 +500,7 @@ class Case2Algo(UTCBot):
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.BID,
                             qty,  # How should this quantity be chosen?
-                            round(price, 1),  # How should this price be chosen?
+                            round(update.market_snapshot_msg.books[asset_name].bids[0].px + 0.1*(theo - price, 1),  # How should this price be chosen?
                         )
                         assert bid_response.ok
                         gamma_hedge = self.gamma_hedge(
@@ -584,7 +584,7 @@ class Case2Algo(UTCBot):
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.ASK,
                             qty,
-                            round(price, 1),
+                            round(update.market_snapshot_msg.books[asset_name].asks[0].px + 0.1*(price - theo), 1),
                         )
                         assert ask_response.ok
                         gamma_hedge = self.gamma_hedge(
