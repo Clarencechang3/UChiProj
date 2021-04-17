@@ -130,7 +130,7 @@ class garman_klass_volatility:
 # ---------------------------------------/GARMAN KLASS---------------------------------------
 delta_threshold = 2000
 gamma_threshold = 20
-theta_threshold = 25
+theta_threshold = -25
 vega_threshold = 35
 option_strikes = [90, 95, 100, 105, 110]
 
@@ -153,13 +153,14 @@ class derivative:
     def gamma_calc(self, d1, u_price, vol, time_to_expiry):
         T = time_to_expiry / 251
         return stats.norm.pdf(d1) / (u_price * vol * math.sqrt(T))
-    
+
     def vega_calc(self, d1, u_price, time_to_expiry):
         T = time_to_expiry / 251
-        return stats.norm.pdf(d1)*u_price*math.sqrt(T)
+        return stats.norm.pdf(d1) * u_price * math.sqrt(T)
+
     def theta_calc(self, d1, u_price, vol, time_to_expiry):
-        T = time_to_expiry/251
-        return -(u_price*stats.norm.pdf(d1)*vol)/(2*sqrt(T))
+        T = time_to_expiry / 251
+        return -(u_price * stats.norm.pdf(d1) * vol) / (2 * math.sqrt(T))
 
     def __init__(self, asset_name: str, flag: str, strike: float, vol: float):
         self.time_to_expiry = 26
@@ -177,15 +178,14 @@ class derivative:
 
 
 class Case2Algo(UTCBot):
-
-    def risk_limit_check():
+    def risk_limit_check(self):
         total_delta = 0
         total_gamma = 0
         total_theta = 0
         total_vega = 0
 
         for asset, qty in self.positions.items():
-            if asset != "UC" and qty >= 0:
+            if asset != "UC" and qty != 0:
                 price = self.underlying_price
                 strike = self.derivatives[asset].strike
                 time_to_expiry = self.derivatives[asset].time_to_expiry
@@ -198,18 +198,36 @@ class Case2Algo(UTCBot):
                 self.derivatives[asset].delta = self.derivatives[asset].delta_calc(
                     self.derivatives[asset].d1
                 )
-                self.derivatives[asset].gamma = self.derivatives[asset].gamma_calc(self.derivatives[asset].d1,
-                 price, self.derivatives[asset].vol, time_to_expiry)
-                self.derivatives[asset].vega = self.derivatives[asset].vega_calc(self.derivatives[asset].d1, price, time_to_expiry)
-                self.derivatives[asset].theta = self.derivatives[asset].theta_calc(self.derivatives[asset].d1,
-                 price, self.derivatives[asset].vol, time_to_expiry) 
+                self.derivatives[asset].gamma = self.derivatives[asset].gamma_calc(
+                    self.derivatives[asset].d1,
+                    price,
+                    self.derivatives[asset].vol,
+                    time_to_expiry,
+                )
+                self.derivatives[asset].vega = self.derivatives[asset].vega_calc(
+                    self.derivatives[asset].d1, price, time_to_expiry
+                )
+                self.derivatives[asset].theta = self.derivatives[asset].theta_calc(
+                    self.derivatives[asset].d1,
+                    price,
+                    self.derivatives[asset].vol,
+                    time_to_expiry,
+                )
+
                 total_delta += self.derivatives[asset].delta
                 total_gamma += self.derivatives[asset].gamma
                 total_theta += self.derivatives[asset].theta
                 total_vega += self.derivatives[asset].vega
-        
-        if (total_delta > delta_threshold or total_gamma > gamma_threshold or total_theta > theta_threshold or total_vega > vega_threshold
-        or total_delta < -delta_threshold or total_gamma < -gamma_threshold or total_theta < -theta_threshold or total_vega < -vega_threshold):
+
+        if (
+            total_delta > delta_threshold
+            or total_gamma > gamma_threshold
+            or total_vega > vega_threshold
+            or total_delta < -delta_threshold
+            or total_gamma < -gamma_threshold
+            or total_theta < theta_threshold
+            or total_vega < -vega_threshold
+        ):
             return True
         else:
             return False
@@ -398,12 +416,10 @@ class Case2Algo(UTCBot):
         """
         # calculates the volatility of the underlying
         vol = self.compute_vol_estimate(longterm=False)
-        print("underlying volatility estimate (short-term): ", vol)
+        print("short-term vol estimate ", vol)
+        print("monte carlo brownian motion estimate ", )
         self.updates += 1
-        if self.updates % 200 == 0:
-            for asset in self.positions:
-                self.derivatives[asset].time_to_expiry -= 1
-            self.delta_hedge()
+
         at_limit = self.risk_limit_check()
         if not at_limit:
             for strike in option_strikes:
@@ -427,20 +443,26 @@ class Case2Algo(UTCBot):
                             asset_name,
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.BID,
-                            5,  # How should this quantity be chosen?
+                            2,  # How should this quantity be chosen?
                             round(theo - 0.30, 1),  # How should this price be chosen?
                         )
                         assert bid_response.ok
-                    # total_delta = 0
+                        # total_delta = 0
                         hedge = self.delta_hedge()
                         if hedge > 0:
                             hedge_response = await self.place_order(
-                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                                "UC",
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.ASK,
+                                hedge,
                             )
                             assert hedge_response.ok
                         if hedge < 0:
                             hedge_response = await self.place_order(
-                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
+                                "UC",
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.BID,
+                                -hedge,
                             )
                             assert hedge_response.ok
 
@@ -449,23 +471,27 @@ class Case2Algo(UTCBot):
                             asset_name,
                             pb.OrderSpecType.LIMIT,
                             pb.OrderSpecSide.ASK,
-                            5,
+                            2,
                             round(theo + 0.30, 1),
                         )
                         assert ask_response.ok
                         hedge = self.delta_hedge()
                         if hedge > 0:
                             hedge_response = await self.place_order(
-                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.ASK, hedge
+                                "UC",
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.ASK,
+                                hedge,
                             )
                             assert hedge_response.ok
                         if hedge < 0:
                             hedge_response = await self.place_order(
-                                "UC", pb.OrderSpecType.MARKET, pb.OrderSpecSide.BID, -hedge
+                                "UC",
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.BID,
+                                -hedge,
                             )
                             assert hedge_response.ok
-        
-            
 
     def delta_hedge(self):
         print("hedging...")
@@ -540,14 +566,20 @@ class Case2Algo(UTCBot):
             fill_msg = update.fill_msg
 
             if fill_msg.order_side == pb.FillMessageSide.BUY:
+                print("bought: ", fill_msg.asset, " quantity: ", fill_msg.filled_qty)
                 self.positions[fill_msg.asset] += update.fill_msg.filled_qty
             else:
+                print("sold: ", fill_msg.asset, " quantity: ", fill_msg.filled_qty)
                 self.positions[fill_msg.asset] -= update.fill_msg.filled_qty
 
         elif kind == "market_snapshot_msg":
             # When we receive a snapshot of what's going on in the market, update our information
             # about the underlying price.
             book = update.market_snapshot_msg.books["UC"]
+
+            # new timestep, decrease all time-to-expiry values accordingly (1 / 200 = 0.005)
+            for _, derivative_obj in self.derivatives.items():
+                derivative_obj.time_to_expiry -= 0.005
 
             # Compute the mid price of the market and store it
             self.underlying_price = (
@@ -579,13 +611,7 @@ class Case2Algo(UTCBot):
             # if last noted day is not this day (we've changed days)
             if self.current_day_int is not self.previous_day:
                 self.previous_day = self.current_day_int
-
-                # all derivatives are now 1 day closer to expiration
-                for _, derivative_obj in self.derivatives.items():
-                    derivative_obj.time_to_expiry -= 1
-
-                    if derivative_obj.time_to_expiry < 1:
-                        derivative_obj.time_to_expiry = 0.5
+                self.delta_hedge()
 
         elif (
             kind == "generic_msg"
@@ -610,6 +636,7 @@ class Case2Algo(UTCBot):
                         vol,
                     )
 
+            # if monte carlo higher than current (or lower), keep
             # TODO: Risk management
 
         elif kind == "trade_msg":
