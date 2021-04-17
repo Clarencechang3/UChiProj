@@ -522,6 +522,32 @@ class Case2Algo(UTCBot):
                             round(price, 1),
                         )
                         assert ask_response.ok
+                        gamma_hedge = self.gamma_hedge(asset_name, qty)
+                        if gamma_hedge > 0:
+                            if self.derivatives[asset_name].flag == 'P':
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            else:
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                            gamma_hedge_response = await self.place_order(
+                                asset,
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.ASK,
+                                gamma_hedge,
+                            )
+                            assert hedge_response.ok
+                        if gamma_hedge < 0:
+                            if self.derivatives[asset_name].flag == 'P':
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "C"
+                            else:
+                                asset = "UC" + str(self.derivatives[asset_name].strike) + "P"
+                            gamma_hedge_response = await self.place_order(
+                                asset,
+                                pb.OrderSpecType.MARKET,
+                                pb.OrderSpecSide.BID,
+                                -gamma_hedge,
+                            )
+                            assert gamma_hedge_response.ok
+                            
                         hedge = self.delta_hedge()
                         if hedge > 0:
                             hedge_response = await self.place_order(
