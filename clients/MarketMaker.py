@@ -53,7 +53,7 @@ def daily_rate(daily_rate):
 
 
 def expected_value(bid_ask):
-    num_orders = sum([order.qty for order in bid_ask.bids + bid_ask.asks])
+    num_orders = sum([order.qty for order in bid_ask.bids])
     EV = sum([float(order.px) * (order.qty/num_orders) for order in bid_ask.bids + bid_ask.asks])
     return EV
 
@@ -80,7 +80,7 @@ class MarketMaker(UTCBot):
         self.risk_aversion = 0.21
         self.kappa = 2.0
         self.n = -0.005
-        self.max_orders = 100
+        self.max_orders = 10
         self.max_time = datetime.datetime(2021, 4, 17, 11, 15)
         ########################################################
 
@@ -95,6 +95,10 @@ class MarketMaker(UTCBot):
         self.pos = {asset: 0 for asset in FUTURES + ["RORUSD"]}
         self.mid = {asset: None for asset in FUTURES + ["RORUSD"]}
         self.max_widths = {asset: 0.005 for asset in FUTURES}
+
+
+
+
 
         self.bidorderid = {asset: ["", ""] for asset in FUTURES}
         self.askorderid = {asset: ["", ""] for asset in FUTURES}
@@ -111,7 +115,11 @@ class MarketMaker(UTCBot):
         }
 
 
-
+    def check_blocked(self, ticker, quantity):
+        if ticker == "RORUSD":
+            return quantity + self.pos[ticker] < 10
+        else:
+            return quantity + self.pos[ticker] < 100
 
     async def place_bid(self, ticker, price, quantity):
         phi = self.max_orders if quantity < 0 else math.exp(-self.n * quantity)
@@ -121,16 +129,18 @@ class MarketMaker(UTCBot):
             print(msg)
         else:
             self.bids[ticker] = self.bids[ticker] + [response.order_id]
+            self.num_bids[ticker] = self.num_bids[ticker] + 1
 
     async def place_ask(self, ticker, price, quantity):
-        phi = self.max_orders if quantity > 0 else math.exp(-self.n * quantity)
-        price = round_nearest(price, tick=TICK_SIZES[ticker])
-        response = await self.place_order(ticker, pb.OrderSpecType.LIMIT, pb.OrderSpecSide.ASK, int(phi), price)
-        if not response.ok:
-            print(msg)
-        else:
-            self.asks[ticker] = self.asks[ticker] + [response.order_id]
-
+        if self.check_blocked(ticker, quantity):
+            phi = self.max_orders if quantity > 0 else math.exp(-self.n * quantity)
+            price = round_nearest(price, tick=TICK_SIZES[ticker])
+            response = await self.place_order(ticker, pb.OrderSpecType.LIMIT, pb.OrderSpecSide.ASK, int(phi), price)
+            if not response.ok:
+                print(msg)
+            else:
+                self.asks[ticker] = self.asks[ticker] + [response.order_id]
+                self.num_asks[ticker] = self.num_asks[ticker] + 1
 
     async def update_bid(self, ticker, price, quantity):
         for bid in self.bids[ticker]:
@@ -150,7 +160,7 @@ class MarketMaker(UTCBot):
         num_orders = self.num_bids[asset] + self.num_asks[asset]
         if num_orders == 0:
             await self.place_ask(asset, price, qty)
-            await self.place_bid(asset, price, qty)
+            await self.place_bid(asset, price-spread, qty)
         
         elif num_orders == 1:
             await self.update_ask(asset, price, qty)
@@ -164,9 +174,12 @@ class MarketMaker(UTCBot):
     async def spread(self, bid_ask):
         N_asks = sum([order.qty for order in bid_ask.asks])
         N_bids = sum([order.qty for order in bid_ask.asks])
-        price = expected_value(bid_ask) - (N_asks - N_bids) * self.risk_aversion * variance(bid_ask) * self.time_remaining
-        spread = self.risk_aversion * variance(bid_ask) * self.time_remaining + math.log(1 + (self.risk_aversion / self.kappa))
-        await self.execute(bid_ask.asset, price, spread, N_asks - N_bids)
+        if N_asks + N_bids != 0:
+            price = expected_value(bid_ask) - (N_asks - N_bids) * self.risk_aversion * variance(bid_ask) * self.time_remaining
+            spread = self.risk_aversion * variance(bid_ask) * self.time_remaining + math.log(1 + (self.risk_aversion / self.kappa))
+            await self.execute(bid_ask.asset, price, spread, N_asks - N_bids)
+        else:
+            pass
 
     async def handle_exchange_update(self, update: pb.FeedMessage):
         kind, _ = betterproto.which_one_of(update, "msg")
@@ -174,25 +187,26 @@ class MarketMaker(UTCBot):
             my_m2m = self.cash
             for asset in (FUTURES + ["RORUSD"]):
                my_m2m += self.mid[asset] * self.pos[asset] if self.mid[asset] is not None else 0
-            # print("M2M", update.pnl_msg.m2m_pnl, my_m2m)
+            print("M2M", update.pnl_msg.m2m_pnl, my_m2m)
         # Update position upon fill messages of your trades
         elif kind == "fill_msg":                
             if update.fill_msg.order_side == pb.FillMessageSide.BUY:
                 self.bids[update.fill_msg.asset] = [order for order in self.bids[update.fill_msg.asset] if order != update.fill_msg.order_id]
                 self.cash -= update.fill_msg.filled_qty * float(update.fill_msg.price)
                 self.pos[update.fill_msg.asset] += update.fill_msg.filled_qty
+                self.num_bids[update.fill_msg.asset] = self.num_bids[update.fill_msg.asset] - 1
             else:
                 self.asks[update.fill_msg.asset] = [order for order in self.asks[update.fill_msg.asset] if order != update.fill_msg.order_id]
                 self.cash += update.fill_msg.filled_qty * float(update.fill_msg.price)
                 self.pos[update.fill_msg.asset] -= update.fill_msg.filled_qty
-
-            # print(self.cash)
+                self.num_asks[update.fill_msg.asset] = self.num_asks[update.fill_msg.asset] - 1
         elif kind == "market_snapshot_msg":
             
             # print(update.market_snapshot_msg.timestamp)
             self.time_remaining = (self.max_time - datetime.datetime.strptime(update.market_snapshot_msg.timestamp[:19], '%Y-%m-%d %H:%M:%S')).seconds
             for _, asset in update.market_snapshot_msg.books.items():
                await self.spread(asset)
+            # print(f"PNL: {self.}| Cash: {self.cash}")
                
                
             
